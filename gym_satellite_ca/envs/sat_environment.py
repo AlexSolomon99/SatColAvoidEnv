@@ -18,6 +18,7 @@ from org.orekit.time import TimeScalesFactory
 from org.orekit.utils import Constants
 from org.orekit.utils import PVCoordinates
 from org.orekit.frames import FramesFactory
+from org.orekit.propagation.numerical import NumericalPropagator
 from orekit.pyhelpers import download_orekit_data_curdir, setup_orekit_curdir
 
 from gym_satellite_ca.envs import satDataClass
@@ -40,7 +41,10 @@ class CollisionAvoidanceEnv(gym.Env):
     # Propagation time constants
     PRIMARY_ORBIT_PROPAGATION_PERIOD = 5.0  # days
     SECONDARY_ORBIT_PROPAGATION_PERIOD = 22.0  # minutes
-    PROPAGATION_TIME_STEP = 60.0  # seconds
+    PROPAGATION_TIME_STEP = 60.0 * 10  # seconds
+    INTEGRATOR_MIN_STEP = 1.0
+    INTEGRATOR_MAX_STEP = 200.0
+    INTEGRATOR_ERR_THRESHOLD = 1.0  # meters
 
     # Secondary Satellite Data Constants
     SECONDARY_SC_MASS = 10.0  # kg
@@ -49,7 +53,10 @@ class CollisionAvoidanceEnv(gym.Env):
 
     # Orbit constraints
     MAX_ALTITUDE_DIFF_ALLOWED = 5000.0  # meters
-    INITIAL_ORBIT_BOX = 300.0  # meters
+    # INITIAL_ORBIT_RADIUS_BOUND - the max distance allowed between the satellite in the final
+    # orbit and the same satellite in the initial orbit such that the final orbit can be considered equivalent to the
+    # initial one
+    INITIAL_ORBIT_RADIUS_BOUND = 300.0  # meters
 
     # Collision constants
     COLLISION_MIN_DISTANCE = 500.0  # meters
@@ -78,23 +85,14 @@ class CollisionAvoidanceEnv(gym.Env):
         self._secondary_initial_orbit = None
         self._secondary_initial_state = None
 
-        # set time step and time bound
-        # the orbit of the primary will be propagated for a number of days, discretised with the
-        # time step (PROPAGATION_TIME_STEP), before and after the TCA
-        # the orbit of the secondary will be propagated for a quarter of an orbital period approximately, which is
-        # around 22.0 minutes, with the same time step, before and after the TCA
-        primary_propagation_time_sec = self.PRIMARY_ORBIT_PROPAGATION_PERIOD * 24.0 * 60.0 * 60.0
-        secondary_propagation_time_sec = self.SECONDARY_ORBIT_PROPAGATION_PERIOD * 60.0
-        self._time_discretisation_primary = self.propag_utils.get_time_discretisation(
-            step_duration=self.PROPAGATION_TIME_STEP,
-            time_upper_bound=primary_propagation_time_sec)
-        self._time_discretisation_secondary = self.propag_utils.get_time_discretisation(
-            step_duration=self.PROPAGATION_TIME_STEP,
-            time_upper_bound=secondary_propagation_time_sec)
-        self._absolute_time_discretisation_primary = self.propag_utils.get_absolute_time_discretisation(
-            self.time_discretisation_primary)
-        self._absolute_time_discretisation_secondary = self.propag_utils.get_absolute_time_discretisation(
-            self.time_discretisation_secondary)
+        # initialise time step and time bound
+        self._time_discretisation_primary = None
+        self._time_discretisation_secondary = None
+        self._absolute_time_discretisation_primary = None
+        self._absolute_time_discretisation_secondary = None
+
+        # set the time step and time bound initialised above
+        self.set_time_discretisation_variables()
 
         # instantiate the propagators for the primary and secondary satellites
         self._primary_propagator = None
@@ -106,8 +104,6 @@ class CollisionAvoidanceEnv(gym.Env):
                                        shape=(3,), dtype=np.float64)
 
         # set the observation space
-        # maximum altitude allowed for the primary satellite only
-        max_altitude_allowed = self.satellite.sma + self.MAX_ALTITUDE_DIFF_ALLOWED
         self.observation_space = spaces.Dict(
             {
                 "primary_sc_state_seq": spaces.Box(low=-np.inf,
@@ -136,6 +132,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self._hist_primary_states = []
         self._time_step_idx = 0
 
+        # reset the environment
         self.window = None
         self.clock = None
         self.close()
@@ -187,13 +184,13 @@ class CollisionAvoidanceEnv(gym.Env):
         reward_ = 0.0
 
         # return rewards only at the end of the episode
-        if self._is_done():
+        if not self._is_done():
             return 0.0
 
         # check if the collision has been avoided
         primary_sc_state_intersection = self.propag_utils.propagate_sc_states(
             propagator=self.primary_propagator,
-            initial_sc_states=self.primary_sc_state_sequence,
+            initial_state_for_reset=self.primary_initial_state,
             time_discretisation=self.absolute_time_discretisation_secondary)
         secondary_sc_state_intersection = copy.deepcopy(self.secondary_sc_state_sequence)
 
@@ -204,6 +201,8 @@ class CollisionAvoidanceEnv(gym.Env):
 
         # if the minimum distance between the primary sat and the secondary one is less than the threshold, then the
         # collision is not avoided and the return is -1.0
+        print(f"Intersection distances: ", intersection_diff_seq)
+        print(f"Min distance on collision: {np.min(intersection_diff_seq)}")
         if np.min(intersection_diff_seq) < self.COLLISION_MIN_DISTANCE:
             return -1.0
 
@@ -214,7 +213,9 @@ class CollisionAvoidanceEnv(gym.Env):
             secondary_sc_state_seq=self.initial_primary_sc_state_sequence
         )
 
-        if np.min(primary_sc_orbital_diff_final_vs_initial) > self.MAX_ALTITUDE_DIFF_ALLOWED:
+        print(f"Intersections between initial orbit and the last orbit: {primary_sc_orbital_diff_final_vs_initial}")
+        print(f"Max distance to initial orbit: {np.max(primary_sc_orbital_diff_final_vs_initial)}")
+        if np.max(primary_sc_orbital_diff_final_vs_initial) > self.MAX_ALTITUDE_DIFF_ALLOWED:
             return -1.0
 
         # TODO: maybe add check for the last orbit in the analysis to be the same as the initial one
@@ -223,7 +224,7 @@ class CollisionAvoidanceEnv(gym.Env):
         # then the agent gets rewarded positively
 
         # get the amount of time in which the satellite can be considered to have kept the initial orbit
-        box_mask = (primary_sc_orbital_diff_final_vs_initial - self.INITIAL_ORBIT_BOX) <= 0
+        box_mask = (primary_sc_orbital_diff_final_vs_initial - self.INITIAL_ORBIT_RADIUS_BOUND) <= 0
         inside_box_count = np.sum(box_mask)
         inside_box_perc = inside_box_count / len(primary_sc_orbital_diff_final_vs_initial)
 
@@ -236,7 +237,7 @@ class CollisionAvoidanceEnv(gym.Env):
         return reward_
 
     def _is_done(self) -> bool:
-        return self._time_step_idx >= len(self.primary_sc_state_sequence)
+        return self._time_step_idx >= len(self.primary_sc_state_sequence) - 1
 
     def step(self, action):
         # The force in each direction cannot be greater than the maximum force of the thruster
@@ -255,18 +256,21 @@ class CollisionAvoidanceEnv(gym.Env):
         for i in range(3):
             if abs(action[i]) > 0.0:
                 direction = Vector3D(list((1.0 if action[i] > 0 else -1.0) if i == j else 0.0 for j in range(3)))
-                force = (self.satellite.thruster_max_force * abs(action[i])).item()
+                force = self.satellite.thruster_max_force * abs(action[i])
                 manoeuvre = ConstantThrustManeuver(current_time, self.PROPAGATION_TIME_STEP,
                                                    force, self.satellite.thruster_isp, direction)
                 self.primary_propagator.addForceModel(manoeuvre)
 
         # propagate all the time steps after the manoeuvre and set the observation components
-        # TODO: check if this propagator really works backwards and forwards like we are using it
         self.primary_sc_state_sequence = self.propag_utils.propagate_sc_states(propagator=self.primary_propagator,
-                                                                               initial_sc_states=self.primary_sc_state_sequence,
-                                                                               time_discretisation=self.absolute_time_discretisation_primary,
-                                                                               propag_start_idx=self.time_step_idx)
-        current_state = self.propag_utils.propagate_(self.primary_propagator, new_time)
+                                                                               initial_state_for_reset=self.primary_initial_state,
+                                                                               time_discretisation=self.absolute_time_discretisation_primary)
+
+        # reset propagator to compute the mass # TODO decide if this is really needed - seems like it
+        self.primary_propagator.resetInitialState(self.primary_initial_state)
+        current_state = self.propag_utils.propagate_(propagator=self.primary_propagator,
+                                                     start_date=self.primary_initial_state.getDate(),
+                                                     target_date=new_time)
         self.satellite_mass = current_state.getMass()
         self.tca_time_lapse = self.ref_time.offsetFrom(new_time, UTC)
 
@@ -288,37 +292,61 @@ class CollisionAvoidanceEnv(gym.Env):
         super().reset(seed=seed)
 
         # set the initial orbits and states for the primary and secondary objects
-        self.primary_initial_orbit, self.primary_initial_state = self.propag_utils.get_orbit_state_from_sat()
-        self.secondary_initial_orbit, self.secondary_initial_state = self.set_orbit_state_for_secondary_object(
+        self.primary_initial_orbit, primary_tca_state = self.propag_utils.get_orbit_state_from_sat()
+        self.secondary_initial_orbit, secondary_tca_state = self.set_orbit_state_for_secondary_object(
+            primary_tca_state=primary_tca_state,
             secondary_mass=self.SECONDARY_SC_MASS
         )
 
         # set the propagators for the primary and secondary satellites
-        self._primary_propagator = self.propag_utils.create_propagator(orbit=self.primary_initial_orbit,
-                                                                       sc_mass=self.satellite.mass,
-                                                                       sc_area=self.satellite.area,
-                                                                       sc_reflection=self.satellite.reflection_idx,
-                                                                       sc_frame=self.ref_frame,
-                                                                       ref_time=self.ref_time,
-                                                                       earth_order=self.earth_order,
-                                                                       earth_degree=self.earth_degree,
-                                                                       use_perturbations=self.use_perturbations)
+        self.primary_propagator = self.propag_utils.create_propagator(orbit=self.primary_initial_orbit,
+                                                                      sc_mass=self.satellite.mass,
+                                                                      sc_area=self.satellite.area,
+                                                                      sc_reflection=self.satellite.reflection_idx,
+                                                                      sc_frame=self.ref_frame,
+                                                                      ref_time=self.ref_time,
+                                                                      earth_order=self.earth_order,
+                                                                      earth_degree=self.earth_degree,
+                                                                      use_perturbations=self.use_perturbations,
+                                                                      int_min_step=self.INTEGRATOR_MIN_STEP,
+                                                                      int_max_step=self.INTEGRATOR_MAX_STEP,
+                                                                      int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
 
-        self._secondary_propagator = self.propag_utils.create_propagator(orbit=self.secondary_initial_orbit,
-                                                                         sc_mass=self.SECONDARY_SC_MASS,
-                                                                         sc_area=self.SECONDARY_SC_AREA,
-                                                                         sc_reflection=self.SECONDARY_REFLECTION_IDX,
-                                                                         sc_frame=self.ref_frame,
-                                                                         ref_time=self.ref_time,
-                                                                         earth_order=self.earth_order,
-                                                                         earth_degree=self.earth_degree,
-                                                                         use_perturbations=self.use_perturbations)
+        self.secondary_propagator = self.propag_utils.create_propagator(orbit=self.secondary_initial_orbit,
+                                                                        sc_mass=self.SECONDARY_SC_MASS,
+                                                                        sc_area=self.SECONDARY_SC_AREA,
+                                                                        sc_reflection=self.SECONDARY_REFLECTION_IDX,
+                                                                        sc_frame=self.ref_frame,
+                                                                        ref_time=self.ref_time,
+                                                                        earth_order=self.earth_order,
+                                                                        earth_degree=self.earth_degree,
+                                                                        use_perturbations=self.use_perturbations,
+                                                                        int_min_step=self.INTEGRATOR_MIN_STEP,
+                                                                        int_max_step=self.INTEGRATOR_MAX_STEP,
+                                                                        int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
 
+        # set the initial states of the propagators - the initial state of the propagator should be at ref time
+        primary_propagator_initial_date = self.primary_propagator.getInitialState().getDate()
+        secondary_propagator_initial_date = self.secondary_propagator.getInitialState().getDate()
+        self.primary_initial_state = self.propag_utils.propagate_(propagator=self.primary_propagator,
+                                                                  start_date=primary_propagator_initial_date,
+                                                                  target_date=self.absolute_time_discretisation_primary[
+                                                                      0])
+        self.secondary_initial_state = self.propag_utils.propagate_(propagator=self.secondary_propagator,
+                                                                    start_date=secondary_propagator_initial_date,
+                                                                    target_date=
+                                                                    self.absolute_time_discretisation_secondary[0])
+
+        # reset the initial state of the propagator
+        self.primary_propagator.resetInitialState(self.primary_initial_state)
+        self.secondary_propagator.resetInitialState(self.secondary_initial_state)
+
+        # compute the spacecraft's sequences
         primary_sat_states = self.propag_utils.propagate_sc_states(propagator=self.primary_propagator,
-                                                                   initial_sc_states=self.primary_sc_state_sequence,
+                                                                   initial_state_for_reset=self.primary_initial_state,
                                                                    time_discretisation=self.absolute_time_discretisation_primary)
         secondary_sat_states = self.propag_utils.propagate_sc_states(propagator=self.secondary_propagator,
-                                                                     initial_sc_states=self.secondary_sc_state_sequence,
+                                                                     initial_state_for_reset=self.secondary_initial_state,
                                                                      time_discretisation=self.absolute_time_discretisation_secondary)
 
         # set the initial state sequence for the primary
@@ -348,11 +376,13 @@ class CollisionAvoidanceEnv(gym.Env):
     def close(self):
         return None
 
-    def set_orbit_state_for_secondary_object(self, secondary_mass: float = SECONDARY_SC_MASS,
+    def set_orbit_state_for_secondary_object(self,
+                                             primary_tca_state: SpacecraftState,
+                                             secondary_mass: float = SECONDARY_SC_MASS,
                                              uncertainty_multiplier: float = 10.0):
         # Get the position and velocity of the initial state of the primary object
-        init_primary_pos = np.array(self.primary_initial_state.getPVCoordinates().getPosition().toArray())
-        init_primary_vel = np.array(self.primary_initial_state.getPVCoordinates().getVelocity().toArray())
+        init_primary_pos = np.array(primary_tca_state.getPVCoordinates().getPosition().toArray())
+        init_primary_vel = np.array(primary_tca_state.getPVCoordinates().getVelocity().toArray())
 
         # Get the position and velocity of the initial state of the secondary object
         # 1. Position - Get the position difference between the secondary and primary objects sampled from a normal
@@ -373,6 +403,26 @@ class CollisionAvoidanceEnv(gym.Env):
         secondary_sc_state = SpacecraftState(secondary_orbit_cart, secondary_mass)
 
         return secondary_orbit_cart, secondary_sc_state
+
+    def set_time_discretisation_variables(self):
+        # the orbit of the primary will be propagated for a number of days, discretised with the
+        # time step (PROPAGATION_TIME_STEP), before and after the TCA
+        # the orbit of the secondary will be propagated for a quarter of an orbital period approximately, which is
+        # around 22.0 minutes, with the same time step, before and after the TCA
+        primary_propagation_time_sec = self.PRIMARY_ORBIT_PROPAGATION_PERIOD * 24.0 * 60.0 * 60.0
+        secondary_propagation_time_sec = self.SECONDARY_ORBIT_PROPAGATION_PERIOD * 60.0
+
+        self.time_discretisation_primary = self.propag_utils.get_time_discretisation(
+            step_duration=self.PROPAGATION_TIME_STEP,
+            time_upper_bound=primary_propagation_time_sec)
+        self.time_discretisation_secondary = self.propag_utils.get_time_discretisation(
+            step_duration=self.PROPAGATION_TIME_STEP,
+            time_upper_bound=secondary_propagation_time_sec)
+
+        self.absolute_time_discretisation_primary = self.propag_utils.get_absolute_time_discretisation(
+            self.time_discretisation_primary)
+        self.absolute_time_discretisation_secondary = self.propag_utils.get_absolute_time_discretisation(
+            self.time_discretisation_secondary)
 
     @property
     def satellite(self):
@@ -471,7 +521,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self._time_discretisation_secondary = x
 
     @property
-    def primary_propagator(self):
+    def primary_propagator(self) -> NumericalPropagator:
         return self._primary_propagator
 
     @primary_propagator.setter

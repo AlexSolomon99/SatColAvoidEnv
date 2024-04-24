@@ -36,10 +36,11 @@ class PropagationUtilities:
     @staticmethod
     def create_propagator(orbit: Orbit, sc_mass: float, sc_area: float, sc_reflection: float, sc_frame: Frame,
                           ref_time: AbsoluteDate, earth_order: int, earth_degree: int,
-                          use_perturbations: bool = True):
+                          use_perturbations: bool = True, int_min_step: float = 1.0, int_max_step: float = 200.0,
+                          int_err_threshold: float = 1.0) -> NumericalPropagator:
         # create the propagator
         orbit_type = orbit.getType()
-        integrator = DormandPrince853IntegratorBuilder(1.0, 1000., 1.0).buildIntegrator(orbit, orbit_type)
+        integrator = DormandPrince853IntegratorBuilder(int_min_step, int_max_step, int_err_threshold).buildIntegrator(orbit, orbit_type)
         spacecraft_state = SpacecraftState(orbit, sc_mass)
 
         propagator = NumericalPropagator(integrator)
@@ -76,8 +77,9 @@ class PropagationUtilities:
         return propagator
 
     @staticmethod
-    def propagate_(propagator: NumericalPropagator, propagation_time: AbsoluteDate) -> SpacecraftState:
-        propag_response_state = propagator.propagate(propagation_time)
+    def propagate_(propagator: NumericalPropagator, start_date: AbsoluteDate,
+                   target_date: AbsoluteDate) -> SpacecraftState:
+        propag_response_state = propagator.propagate(start_date, target_date)
         return propag_response_state
 
     @staticmethod
@@ -89,22 +91,30 @@ class PropagationUtilities:
 
         return time_discretisation
 
-    def propagate_sc_states(self, propagator: NumericalPropagator, initial_sc_states: np.array,
-                            time_discretisation: np.array, propag_start_idx: int = 0) -> np.array:
-        if propag_start_idx == 0:
-            orbital_positions = []
-        else:
-            orbital_positions = copy.deepcopy(initial_sc_states[:propag_start_idx].tolist())
+    def propagate_sc_states(self, propagator: NumericalPropagator,
+                            initial_state_for_reset: SpacecraftState,
+                            time_discretisation: np.array) -> np.array:
+        # instantiate propagation auxiliary variables
+        orbital_positions = []
+        propag_target_idx = 0
+        num_propagations = len(time_discretisation)
+
+        # reset to the initial state of the propagator
+        propagator.resetInitialState(initial_state_for_reset)
+        propagation_start_time = initial_state_for_reset.getDate()
 
         # get the positions of the satellite at the required time
-        for current_time in time_discretisation[propag_start_idx:]:
-            primary_state = self.propagate_(propagator=propagator, propagation_time=current_time)
+        while propag_target_idx < num_propagations:
+            # propagate the state to the desired date and save the position
+            sc_state = self.propagate_(propagator=propagator,
+                                       start_date=propagation_start_time,
+                                       target_date=time_discretisation[propag_target_idx])
+            orbital_positions.append(np.array(sc_state.getPosition().toArray()))
 
-            orbital_positions.append(np.array(primary_state.getPosition().toArray()))
-            # TODO: check which is correct
-            # orbital_positions = np.append(orbital_positions, np.array([primary_state.getPosition().toArray()]), axis=0)
+            propagation_start_time = time_discretisation[propag_target_idx]
+            propag_target_idx += 1
 
-        return np.array(orbital_positions)
+        return copy.deepcopy(np.array(orbital_positions))
 
     def get_absolute_time_discretisation(self, time_discretisation: list) -> List[AbsoluteDate]:
         abs_time_disc = []
