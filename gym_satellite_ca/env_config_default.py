@@ -13,7 +13,7 @@ def get_sat_data_default_config():
         "area": 1.0,
         "reflection_idx": 2.0,
         "angle_type": "DEGREE",
-        "thruster_max_force": 1.0,
+        "thruster_max_force": 0.01,
         "thruster_isp": 4000.0}
 
 

@@ -39,12 +39,12 @@ class CollisionAvoidanceEnv(gym.Env):
 
     # Constants Definition
     # Propagation time constants
-    PRIMARY_ORBIT_PROPAGATION_PERIOD = 5.0  # days
-    SECONDARY_ORBIT_PROPAGATION_PERIOD = 22.0  # minutes
+    PRIMARY_ORBIT_PROPAGATION_PERIOD = 4.0  # days
+    SECONDARY_ORBIT_PROPAGATION_PERIOD = 40.0  # minutes
     PROPAGATION_TIME_STEP = 60.0 * 10  # seconds
     INTEGRATOR_MIN_STEP = 1.0
     INTEGRATOR_MAX_STEP = 200.0
-    INTEGRATOR_ERR_THRESHOLD = 1.0  # meters
+    INTEGRATOR_ERR_THRESHOLD = 0.1  # meters
 
     # Secondary Satellite Data Constants
     SECONDARY_SC_MASS = 10.0  # kg
@@ -82,6 +82,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self._primary_initial_orbit = None
         self._primary_initial_state = None
         self._initial_primary_sc_state_sequence = None
+        self._primary_current_state = None
         self._secondary_initial_orbit = None
         self._secondary_initial_state = None
 
@@ -90,6 +91,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self._time_discretisation_secondary = None
         self._absolute_time_discretisation_primary = None
         self._absolute_time_discretisation_secondary = None
+        self._time_step_idx_last_orbit = None
 
         # set the time step and time bound initialised above
         self.set_time_discretisation_variables()
@@ -106,13 +108,17 @@ class CollisionAvoidanceEnv(gym.Env):
         # set the observation space
         self.observation_space = spaces.Dict(
             {
+                "primary_current_pv": spaces.Box(low=-np.inf,
+                                                    high=np.inf,
+                                                    shape=(6,),
+                                                    dtype=np.float64),
                 "primary_sc_state_seq": spaces.Box(low=-np.inf,
                                                    high=np.inf,
-                                                   shape=(len(self.time_discretisation_primary), 3),
+                                                   shape=(len(self.time_discretisation_primary), 6),
                                                    dtype=np.float64),
                 "secondary_sc_state_seq": spaces.Box(low=-np.inf,
                                                      high=np.inf,
-                                                     shape=(len(self.time_discretisation_secondary), 3),
+                                                     shape=(len(self.time_discretisation_secondary), 6),
                                                      dtype=np.float64),
                 "tca_time_lapse": spaces.Box(low=self.time_discretisation_primary[0] - 10.0,
                                              high=abs(self.time_discretisation_primary[0]) + 10.0,
@@ -122,6 +128,7 @@ class CollisionAvoidanceEnv(gym.Env):
         )
 
         # instantiate the components of the observation space
+        self._primary_current_pv = None
         self._primary_sc_state_sequence = None
         self._secondary_sc_state_sequence = None
         self._tca_time_lapse = None
@@ -139,7 +146,8 @@ class CollisionAvoidanceEnv(gym.Env):
         self.reset()
 
     def _get_obs(self):
-        return {"primary_sc_state_seq": self.primary_sc_state_sequence,
+        return {"primary_current_pv": self.primary_current_pv,
+                "primary_sc_state_seq": self.primary_sc_state_sequence,
                 "secondary_sc_state_seq": self.secondary_sc_state_sequence,
                 "tca_time_lapse": np.array([self.tca_time_lapse]),
                 "primary_sc_mass": np.array([self.satellite_mass])
@@ -180,59 +188,46 @@ class CollisionAvoidanceEnv(gym.Env):
 
         :return: A floating point number representing the reward the agent receives at the end of the episode.
         """
-        # instantiate the episode reward
+        # instantiate the step reward
         reward_ = 0.0
 
-        # return rewards only at the end of the episode
-        if not self._is_done():
-            return 0.0
+        # get the reward for avoiding the collision (punishment for not avoiding it)
+        # check if the current state of the primary corresponds to a state in which the position of the secondary
+        # satellite is known and compute the distance between the states
+        current_absolute_time = self.time_discretisation_primary[self.time_step_idx]
+        if current_absolute_time in self.time_discretisation_secondary:
+            idx_of_time_secondary = np.where(self.time_discretisation_secondary == current_absolute_time)[0][0]
 
-        # check if the collision has been avoided
-        primary_sc_state_intersection = self.propag_utils.propagate_sc_states(
-            propagator=self.primary_propagator,
-            initial_state_for_reset=self.primary_initial_state,
-            time_discretisation=self.absolute_time_discretisation_secondary)
-        secondary_sc_state_intersection = copy.deepcopy(self.secondary_sc_state_sequence)
+            state_from_primary_orbit = self.primary_current_pv[:3]
+            state_from_secondary_orbit = self.secondary_sc_state_sequence[idx_of_time_secondary, :3]
+            diff_state_pvs = self.reward_utils.compute_dist_between_states(state_from_primary_orbit,
+                                                                           state_from_secondary_orbit)
 
-        intersection_diff_seq = self.reward_utils.compute_sequence_of_distances_between_states(
-            primary_sc_state_seq=primary_sc_state_intersection,
-            secondary_sc_state_seq=secondary_sc_state_intersection
-        )
+            if diff_state_pvs < self.COLLISION_MIN_DISTANCE:
+                reward_ -= 1.0 * (self.COLLISION_MIN_DISTANCE - diff_state_pvs)
 
-        # if the minimum distance between the primary sat and the secondary one is less than the threshold, then the
-        # collision is not avoided and the return is -1.0
-        print(f"Intersection distances: ", intersection_diff_seq)
-        print(f"Min distance on collision: {np.min(intersection_diff_seq)}")
-        if np.min(intersection_diff_seq) < self.COLLISION_MIN_DISTANCE:
-            return -1.0
+        # get reward for keeping the initial orbit
+        state_from_init_orbit = self.primary_sc_state_sequence[self.time_step_idx][:3]
+        current_state = self.primary_current_pv[:3]
+        diff_state_cvi = self.reward_utils.compute_dist_between_states(current_state, state_from_init_orbit)
 
-        # if the satellite goes outside the orbital boundaries, either too up or too down (down meaning closer to
-        # Earth), then the reward is also -1.0
-        primary_sc_orbital_diff_final_vs_initial = self.reward_utils.compute_sequence_of_distances_between_states(
-            primary_sc_state_seq=self.primary_sc_state_sequence,
-            secondary_sc_state_seq=self.initial_primary_sc_state_sequence
-        )
+        if diff_state_cvi <= self.INITIAL_ORBIT_RADIUS_BOUND:
+            reward_ += 1.0
 
-        print(f"Intersections between initial orbit and the last orbit: {primary_sc_orbital_diff_final_vs_initial}")
-        print(f"Max distance to initial orbit: {np.max(primary_sc_orbital_diff_final_vs_initial)}")
-        if np.max(primary_sc_orbital_diff_final_vs_initial) > self.MAX_ALTITUDE_DIFF_ALLOWED:
-            return -1.0
+        # get the negative reward for not returning to the initial orbit by the end of the event
+        if self.time_step_idx >= self.time_step_idx_last_orbit:
+            if diff_state_cvi > self.INITIAL_ORBIT_RADIUS_BOUND:
+                reward_ -= 10.0 + (diff_state_cvi - self.INITIAL_ORBIT_RADIUS_BOUND)
 
-        # TODO: maybe add check for the last orbit in the analysis to be the same as the initial one
+        # get the negative reward for going outside the orbital bound, which is an extreme deviation from the
+        # initial orbit
+        if diff_state_cvi > self.MAX_ALTITUDE_DIFF_ALLOWED:
+            reward_ -= (diff_state_cvi - self.MAX_ALTITUDE_DIFF_ALLOWED)
 
-        # otherwise, if there is no collision and the orbit is within boundaries,
-        # then the agent gets rewarded positively
-
-        # get the amount of time in which the satellite can be considered to have kept the initial orbit
-        box_mask = (primary_sc_orbital_diff_final_vs_initial - self.INITIAL_ORBIT_RADIUS_BOUND) <= 0
-        inside_box_count = np.sum(box_mask)
-        inside_box_perc = inside_box_count / len(primary_sc_orbital_diff_final_vs_initial)
-
-        # get the amount of fuel used
-        fuel_used_perc = (self.primary_initial_state.getMass() - self.satellite_mass) / self.primary_initial_state.getMass()
-
-        # TODO: maybe the reward system also depends on the learning method used?
-        reward_ = 2.0 * (inside_box_perc + fuel_used_perc)
+        # get the negative reward for using fuel
+        fuel_used_perc = ((self.primary_initial_state.getMass() - self.satellite_mass) /
+                          self.primary_initial_state.getMass())
+        reward_ -= 100.0 * fuel_used_perc
 
         return reward_
 
@@ -241,11 +236,8 @@ class CollisionAvoidanceEnv(gym.Env):
 
     def step(self, action):
         # The force in each direction cannot be greater than the maximum force of the thruster
-        assert all(abs(a) <= self.satellite.thruster_max_force for a in action), \
-            f"Force in each direction can't be greater than {self.satellite.thruster_max_force}: {action}"
-
-        # record the action
-        self.hist_actions.append(action)
+        assert all(abs(a) <= 1.0 for a in action), \
+            f"The action in each direction can't be greater than 1.0 - cannot use more than the maximum thrust."
 
         # get the current and new time, with the time step increased
         current_time = self.absolute_time_discretisation_primary[self.time_step_idx]
@@ -261,21 +253,19 @@ class CollisionAvoidanceEnv(gym.Env):
                                                    force, self.satellite.thruster_isp, direction)
                 self.primary_propagator.addForceModel(manoeuvre)
 
-        # propagate all the time steps after the manoeuvre and set the observation components
-        self.primary_sc_state_sequence = self.propag_utils.propagate_sc_states(propagator=self.primary_propagator,
-                                                                               initial_state_for_reset=self.primary_initial_state,
-                                                                               time_discretisation=self.absolute_time_discretisation_primary)
+        # get the current state of the primary, at the new time
+        self.primary_propagator.resetInitialState(self.primary_current_state)
+        self.primary_current_state = self.propag_utils.propagate_(propagator=self.primary_propagator,
+                                                                  start_date=current_time,
+                                                                  target_date=new_time)
+        self.primary_current_pv = self.propag_utils.get_pv_from_state(self.primary_current_state)
 
-        # reset propagator to compute the mass # TODO decide if this is really needed - seems like it
-        self.primary_propagator.resetInitialState(self.primary_initial_state)
-        current_state = self.propag_utils.propagate_(propagator=self.primary_propagator,
-                                                     start_date=self.primary_initial_state.getDate(),
-                                                     target_date=new_time)
-        self.satellite_mass = current_state.getMass()
+        self.satellite_mass = self.primary_current_state.getMass()
         self.tca_time_lapse = self.ref_time.offsetFrom(new_time, UTC)
 
-        # compute the reward
-        reward = self._get_reward()
+        # add to the historical recordings
+        self.hist_actions.append(action)
+        self.hist_primary_states.append(copy.deepcopy(self.primary_current_pv))
 
         # check if the current state indicates the termination of the episode
         terminated = self._is_done()
@@ -284,6 +274,9 @@ class CollisionAvoidanceEnv(gym.Env):
         # set the observation and the additional information
         observation = self._get_obs()
         info = self._get_info()
+
+        # compute the reward
+        reward = self._get_reward()
 
         return observation, reward, terminated, truncated, info
 
@@ -325,7 +318,7 @@ class CollisionAvoidanceEnv(gym.Env):
                                                                         int_max_step=self.INTEGRATOR_MAX_STEP,
                                                                         int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
 
-        # set the initial states of the propagators - the initial state of the propagator should be at ref time
+        # set the initial states of the propagators
         primary_propagator_initial_date = self.primary_propagator.getInitialState().getDate()
         secondary_propagator_initial_date = self.secondary_propagator.getInitialState().getDate()
         self.primary_initial_state = self.propag_utils.propagate_(propagator=self.primary_propagator,
@@ -352,7 +345,11 @@ class CollisionAvoidanceEnv(gym.Env):
         # set the initial state sequence for the primary
         self.initial_primary_sc_state_sequence = copy.deepcopy(primary_sat_states)
 
+        # set the current state of the primary satellite
+        self.primary_current_state = self.primary_initial_state
+
         # set the components of the initial observation
+        self.primary_current_pv = copy.deepcopy(primary_sat_states[0])
         self.primary_sc_state_sequence = copy.deepcopy(primary_sat_states)
         self.secondary_sc_state_sequence = copy.deepcopy(secondary_sat_states)
         self.tca_time_lapse = self.ref_time.offsetFrom(self.absolute_time_discretisation_primary[0], UTC)
@@ -360,8 +357,13 @@ class CollisionAvoidanceEnv(gym.Env):
 
         # reset the records
         self.hist_actions = []
-        self.hist_primary_states = [primary_sat_states[0]]
+        self.hist_primary_states = [self.primary_current_pv]
         self.time_step_idx = 0
+
+        # get the orbital period and the indexes in the time discretisation corresponding to it
+        orbital_period = self.primary_initial_orbit.getKeplerianPeriod()
+        num_time_steps_for_period = int(orbital_period // self.PROPAGATION_TIME_STEP)
+        self.time_step_idx_last_orbit = len(self.time_discretisation_primary) - 1 - num_time_steps_for_period
 
         # set the observation and the additional information
         observation = self._get_obs()
@@ -473,7 +475,23 @@ class CollisionAvoidanceEnv(gym.Env):
         self._earth_order = x
 
     @property
-    def primary_initial_orbit(self):
+    def primary_current_pv(self):
+        return self._primary_current_pv
+
+    @primary_current_pv.setter
+    def primary_current_pv(self, x):
+        self._primary_current_pv = x
+
+    @property
+    def primary_current_state(self):
+        return self._primary_current_state
+
+    @primary_current_state.setter
+    def primary_current_state(self, x):
+        self._primary_current_state = x
+
+    @property
+    def primary_initial_orbit(self) -> CartesianOrbit:
         return self._primary_initial_orbit
 
     @primary_initial_orbit.setter
@@ -599,6 +617,14 @@ class CollisionAvoidanceEnv(gym.Env):
     @time_step_idx.setter
     def time_step_idx(self, x):
         self._time_step_idx = x
+
+    @property
+    def time_step_idx_last_orbit(self):
+        return self._time_step_idx_last_orbit
+
+    @time_step_idx_last_orbit.setter
+    def time_step_idx_last_orbit(self, x):
+        self._time_step_idx_last_orbit = x
 
     @property
     def absolute_time_discretisation_primary(self):
