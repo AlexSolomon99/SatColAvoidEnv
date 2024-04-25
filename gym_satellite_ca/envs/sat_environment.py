@@ -109,9 +109,9 @@ class CollisionAvoidanceEnv(gym.Env):
         self.observation_space = spaces.Dict(
             {
                 "primary_current_pv": spaces.Box(low=-np.inf,
-                                                    high=np.inf,
-                                                    shape=(6,),
-                                                    dtype=np.float64),
+                                                 high=np.inf,
+                                                 shape=(6,),
+                                                 dtype=np.float64),
                 "primary_sc_state_seq": spaces.Box(low=-np.inf,
                                                    high=np.inf,
                                                    shape=(len(self.time_discretisation_primary), 6),
@@ -283,6 +283,20 @@ class CollisionAvoidanceEnv(gym.Env):
     def reset(self, seed=None, options=None):
         # We need the following line to seed self.np_random
         super().reset(seed=seed)
+
+        # reset the reference time and the position of the satellite in the orbit
+        self.satellite.set_random_tran()
+        ref_time_offset_days = self.np_random.uniform(-10.0, 10.0)
+        self.ref_time = self.ref_time.shiftedBy(ref_time_offset_days * 24.0 * 3600.0)
+
+        # re-instantiate the propagation and reward utilities classes
+        self.propag_utils = propagUtils.PropagationUtilities(satellite=self.satellite,
+                                                             ref_time=self.ref_time,
+                                                             ref_frame=self.ref_frame)
+        self.reward_utils = rewardUtils.RewardUtils()
+
+        # reset the time discretisation variables
+        self.set_time_discretisation_variables()
 
         # set the initial orbits and states for the primary and secondary objects
         self.primary_initial_orbit, primary_tca_state = self.propag_utils.get_orbit_state_from_sat()
