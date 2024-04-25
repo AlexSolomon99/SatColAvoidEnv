@@ -95,7 +95,7 @@ class PropagationUtilities:
                             initial_state_for_reset: SpacecraftState,
                             time_discretisation: np.array) -> np.array:
         # instantiate propagation auxiliary variables
-        orbital_positions = []
+        orbital_states = []
         propag_target_idx = 0
         num_propagations = len(time_discretisation)
 
@@ -109,12 +109,20 @@ class PropagationUtilities:
             sc_state = self.propagate_(propagator=propagator,
                                        start_date=propagation_start_time,
                                        target_date=time_discretisation[propag_target_idx])
-            orbital_positions.append(np.array(sc_state.getPosition().toArray()))
+            orbital_states.append(self.get_pv_from_state(sc_state))
 
             propagation_start_time = time_discretisation[propag_target_idx]
             propag_target_idx += 1
 
-        return copy.deepcopy(np.array(orbital_positions))
+        return copy.deepcopy(np.array(orbital_states))
+
+    @staticmethod
+    def get_pv_from_state(sc_state: SpacecraftState):
+        state_pv_coordinates = sc_state.getPVCoordinates()
+        state_pos = np.array(state_pv_coordinates.getPosition().toArray())
+        state_vel = np.array(state_pv_coordinates.getVelocity().toArray())
+
+        return np.concatenate([state_pos, state_vel])
 
     def get_absolute_time_discretisation(self, time_discretisation: list) -> List[AbsoluteDate]:
         abs_time_disc = []
