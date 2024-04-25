@@ -1,1 +1,2 @@
 from gym_satellite_ca.envs.sat_environment import CollisionAvoidanceEnv
+from gym_satellite_ca.envs.satDataClass import SatelliteData
