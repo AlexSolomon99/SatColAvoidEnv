@@ -101,8 +101,8 @@ class CollisionAvoidanceEnv(gym.Env):
         self._secondary_propagator = None
 
         # set the action space
-        self.action_space = spaces.Box(low=-1.0 * self.satellite.thruster_max_force,
-                                       high=1.0 * self.satellite.thruster_max_force,
+        self.action_space = spaces.Box(low=-1.0,
+                                       high=1.0,
                                        shape=(3,), dtype=np.float64)
 
         # set the observation space
@@ -236,8 +236,11 @@ class CollisionAvoidanceEnv(gym.Env):
 
     def step(self, action):
         # The force in each direction cannot be greater than the maximum force of the thruster
-        assert all(abs(a) <= 1.0 for a in action), \
-            f"The action in each direction can't be greater than 1.0 - cannot use more than the maximum thrust."
+        for action_idx in range(len(action)):
+            if action[action_idx] <= 0:
+                action[action_idx] = max(-1.0, action[action_idx])
+            else:
+                action[action_idx] = min(1.0, action[action_idx])
 
         # get the current and new time, with the time step increased
         current_time = self.absolute_time_discretisation_primary[self.time_step_idx]
