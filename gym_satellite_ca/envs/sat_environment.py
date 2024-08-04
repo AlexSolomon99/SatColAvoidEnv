@@ -61,7 +61,9 @@ class CollisionAvoidanceEnv(gym.Env):
     # Collision constants
     COLLISION_MIN_DISTANCE = 500.0  # meters
 
-    def __init__(self, satellite: satDataClass.SatelliteData, ref_time: AbsoluteDate = DEFAULT_REF_TIME,
+    def __init__(self,
+                 satellite: satDataClass.SatelliteData,
+                 ref_time: AbsoluteDate = DEFAULT_REF_TIME,
                  ref_frame: Frame = DEFAULT_REF_FRAME, use_perturbations: bool = False,
                  earth_degree: int = 16, earth_order: int = 16):
         super(gym.Env, self).__init__()
@@ -204,30 +206,35 @@ class CollisionAvoidanceEnv(gym.Env):
                                                                            state_from_secondary_orbit)
 
             if diff_state_pvs < self.COLLISION_MIN_DISTANCE:
-                reward_ -= 1.0 * (self.COLLISION_MIN_DISTANCE - diff_state_pvs)
+                reward_ -= (self.reward_utils.COLLISION_AVOIDANCE_NORM_TERM *
+                            (self.COLLISION_MIN_DISTANCE - diff_state_pvs))
 
         # get reward for keeping the initial orbit
         state_from_init_orbit = self.primary_sc_state_sequence[self.time_step_idx][:3]
         current_state = self.primary_current_pv[:3]
         diff_state_cvi = self.reward_utils.compute_dist_between_states(current_state, state_from_init_orbit)
 
-        if diff_state_cvi <= self.INITIAL_ORBIT_RADIUS_BOUND:
-            reward_ += 1.0
+        # if diff_state_cvi <= self.INITIAL_ORBIT_RADIUS_BOUND:
+        #     reward_ += 1.0
 
         # get the negative reward for not returning to the initial orbit by the end of the event
         if self.time_step_idx >= self.time_step_idx_last_orbit:
             if diff_state_cvi > self.INITIAL_ORBIT_RADIUS_BOUND:
-                reward_ -= 10.0 + (diff_state_cvi - self.INITIAL_ORBIT_RADIUS_BOUND)
+                return_orbit_radius = (self.reward_utils.RETURN_FAILURE_NORM_TERM *
+                                       (diff_state_cvi - self.INITIAL_ORBIT_RADIUS_BOUND))
+                reward_ -= min([self.reward_utils.MAX_PUNISHMENT_RETURN, return_orbit_radius])
 
         # get the negative reward for going outside the orbital bound, which is an extreme deviation from the
         # initial orbit
         if diff_state_cvi > self.MAX_ALTITUDE_DIFF_ALLOWED:
-            reward_ -= (diff_state_cvi - self.MAX_ALTITUDE_DIFF_ALLOWED)
+            out_of_bounds_reward = (self.reward_utils.BOUNDARY_EXIT_NORM_TERM *
+                                    (diff_state_cvi - self.MAX_ALTITUDE_DIFF_ALLOWED))
+            reward_ -= min([self.reward_utils.MAX_PUNISHMENT_OUT_BOUND, out_of_bounds_reward])
 
         # get the negative reward for using fuel
         fuel_used_perc = ((self.primary_initial_state.getMass() - self.satellite_mass) /
                           self.primary_initial_state.getMass())
-        reward_ -= 100.0 * fuel_used_perc
+        reward_ -= self.reward_utils.FUEL_USED_NORM_TERM * fuel_used_perc
 
         return reward_
 

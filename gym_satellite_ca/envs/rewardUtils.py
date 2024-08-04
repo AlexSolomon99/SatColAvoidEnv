@@ -3,6 +3,14 @@ import numpy as np
 
 class RewardUtils:
 
+    # Constants definition
+    COLLISION_AVOIDANCE_NORM_TERM = 1e-2
+    RETURN_FAILURE_NORM_TERM = 1e-3
+    MAX_PUNISHMENT_RETURN = 5.0
+    BOUNDARY_EXIT_NORM_TERM = 1e-3
+    MAX_PUNISHMENT_OUT_BOUND = 10
+    FUEL_USED_NORM_TERM = 10.0
+
     def __init__(self):
         pass
 
