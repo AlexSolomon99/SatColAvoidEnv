@@ -53,6 +53,8 @@ class CollisionAvoidanceEnv(gym.Env):
 
     # Orbit constraints
     MAX_ALTITUDE_DIFF_ALLOWED = 5000.0  # meters
+    MIN_ORBIT_DISTANCE_TO_EARTH = 6500000.0  # meters
+    MAX_ORBIT_DISTANCE_TO_EARTH = 8000000.0  # meters
     # INITIAL_ORBIT_RADIUS_BOUND - the max distance allowed between the satellite in the final
     # orbit and the same satellite in the initial orbit such that the final orbit can be considered equivalent to the
     # initial one
@@ -81,6 +83,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self._reward_utils = rewardUtils.RewardUtils()
 
         # initialise the initial orbits and states for the primary and secondary satellites
+        self._primary_init_kepl_orbit = None
         self._primary_initial_orbit = None
         self._primary_initial_state = None
         self._initial_primary_sc_state_sequence = None
@@ -114,10 +117,6 @@ class CollisionAvoidanceEnv(gym.Env):
                                                  high=np.inf,
                                                  shape=(6,),
                                                  dtype=np.float64),
-                "primary_sc_state_seq": spaces.Box(low=-np.inf,
-                                                   high=np.inf,
-                                                   shape=(len(self.time_discretisation_primary), 6),
-                                                   dtype=np.float64),
                 "secondary_sc_state_seq": spaces.Box(low=-np.inf,
                                                      high=np.inf,
                                                      shape=(len(self.time_discretisation_secondary), 6),
@@ -139,9 +138,18 @@ class CollisionAvoidanceEnv(gym.Env):
         # instantiate the historical recordings
         self._hist_actions = []
         self._hist_primary_states = []
+        self._hist_kepl_elements = []
+        self._hist_primary_at_collision_states = []
         self._time_step_idx = 0
 
+        # instantiate conditions checkers
+        self._collision_avoided = True
+        self._returned_to_init_orbit = True
+        self._drifted_out_of_bounds = False
+        self._fuel_used_perc = 0.0
+
         # reset the environment
+        self._truncated = False
         self.window = None
         self.clock = None
         self.close()
@@ -149,7 +157,6 @@ class CollisionAvoidanceEnv(gym.Env):
 
     def _get_obs(self):
         return {"primary_current_pv": self.primary_current_pv,
-                "primary_sc_state_seq": self.primary_sc_state_sequence,
                 "secondary_sc_state_seq": self.secondary_sc_state_sequence,
                 "tca_time_lapse": np.array([self.tca_time_lapse]),
                 "primary_sc_mass": np.array([self.satellite_mass])
@@ -157,7 +164,20 @@ class CollisionAvoidanceEnv(gym.Env):
 
     def _get_info(self):
         return {
-            "None": None
+            "primary_init_sequence": self.initial_primary_sc_state_sequence,
+            "secondary_init_sequence": self.secondary_sc_state_sequence,
+            "historical_actions": self.hist_actions,
+            "historical_primary_sequence": self.hist_primary_states,
+            "hist_primary_at_collision_states": self.hist_primary_at_collision_states,
+            "hist_kepl_elements": self.hist_kepl_elements,
+            "collision_distance": self.COLLISION_MIN_DISTANCE,
+            "initial_orbit_radius_bound": self.INITIAL_ORBIT_RADIUS_BOUND,
+            "max_altitude_diff_allowed": self.MAX_ALTITUDE_DIFF_ALLOWED,
+            "time_step_idx": self.time_step_idx,
+            "collision_avoided": self.collision_avoided,
+            "returned_to_init_orbit": self.returned_to_init_orbit,
+            "drifted_out_of_bounds": self.drifted_out_of_bounds,
+            "fuel_used_perc": self.fuel_used_perc
         }
 
     def _get_reward(self) -> float:
@@ -205,41 +225,49 @@ class CollisionAvoidanceEnv(gym.Env):
             diff_state_pvs = self.reward_utils.compute_dist_between_states(state_from_primary_orbit,
                                                                            state_from_secondary_orbit)
 
+            # save the primary state
+            self.hist_primary_at_collision_states.append(copy.deepcopy(self.primary_current_pv))
+
             if diff_state_pvs < self.COLLISION_MIN_DISTANCE:
+                self.collision_avoided = False
                 reward_ -= (self.reward_utils.COLLISION_AVOIDANCE_NORM_TERM *
                             (self.COLLISION_MIN_DISTANCE - diff_state_pvs))
 
-        # get reward for keeping the initial orbit
-        state_from_init_orbit = self.primary_sc_state_sequence[self.time_step_idx][:3]
-        current_state = self.primary_current_pv[:3]
-        diff_state_cvi = self.reward_utils.compute_dist_between_states(current_state, state_from_init_orbit)
-
-        # if diff_state_cvi <= self.INITIAL_ORBIT_RADIUS_BOUND:
-        #     reward_ += 1.0
-
         # get the negative reward for not returning to the initial orbit by the end of the event
         if self.time_step_idx >= self.time_step_idx_last_orbit:
-            if diff_state_cvi > self.INITIAL_ORBIT_RADIUS_BOUND:
-                return_orbit_radius = (self.reward_utils.RETURN_FAILURE_NORM_TERM *
-                                       (diff_state_cvi - self.INITIAL_ORBIT_RADIUS_BOUND))
-                reward_ -= min([self.reward_utils.MAX_PUNISHMENT_RETURN, return_orbit_radius])
+            current_kepl_orbit = self.propag_utils.get_keplerian_orbit_from_sc_state(sc_state=self.primary_current_state)
+            init_to_final_comp_reward = self.reward_utils.compare_kepl_orbits(kepl_orbit_1=current_kepl_orbit,
+                                                                              kepl_orbit_2=self.primary_init_kepl_orbit)
+            if init_to_final_comp_reward < 0:
+                self.returned_to_init_orbit = False
+            reward_ += init_to_final_comp_reward
 
         # get the negative reward for going outside the orbital bound, which is an extreme deviation from the
         # initial orbit
-        if diff_state_cvi > self.MAX_ALTITUDE_DIFF_ALLOWED:
+        distance_to_earth_center = np.linalg.norm(self.primary_current_pv[:3])
+        if distance_to_earth_center < self.MIN_ORBIT_DISTANCE_TO_EARTH:
+            self.drifted_out_of_bounds = True
+            reward_ -= 10.0
+            self.truncated = True
+
+        if distance_to_earth_center > self.MAX_ORBIT_DISTANCE_TO_EARTH:
             out_of_bounds_reward = (self.reward_utils.BOUNDARY_EXIT_NORM_TERM *
-                                    (diff_state_cvi - self.MAX_ALTITUDE_DIFF_ALLOWED))
+                                    (distance_to_earth_center - self.MAX_ORBIT_DISTANCE_TO_EARTH))
             reward_ -= min([self.reward_utils.MAX_PUNISHMENT_OUT_BOUND, out_of_bounds_reward])
 
         # get the negative reward for using fuel
         fuel_used_perc = ((self.primary_initial_state.getMass() - self.satellite_mass) /
                           self.primary_initial_state.getMass())
+        self.fuel_used_perc = fuel_used_perc
         reward_ -= self.reward_utils.FUEL_USED_NORM_TERM * fuel_used_perc
 
         return reward_
 
     def _is_done(self) -> bool:
         return self._time_step_idx >= len(self.primary_sc_state_sequence) - 1
+
+    def _is_truncated(self) -> bool:
+        return self.truncated
 
     def step(self, action):
         # The force in each direction cannot be greater than the maximum force of the thruster
@@ -276,10 +304,11 @@ class CollisionAvoidanceEnv(gym.Env):
         # add to the historical recordings
         self.hist_actions.append(action)
         self.hist_primary_states.append(copy.deepcopy(self.primary_current_pv))
+        self.hist_kepl_elements.append(self.propag_utils.get_kepl_elem_from_state(sc_state=self.primary_current_state))
 
         # check if the current state indicates the termination of the episode
         terminated = self._is_done()
-        truncated = False
+        truncated = self._is_truncated()
 
         # set the observation and the additional information
         observation = self._get_obs()
@@ -309,7 +338,8 @@ class CollisionAvoidanceEnv(gym.Env):
         self.set_time_discretisation_variables()
 
         # set the initial orbits and states for the primary and secondary objects
-        self.primary_initial_orbit, primary_tca_state = self.propag_utils.get_orbit_state_from_sat()
+        self.primary_init_kepl_orbit, self.primary_initial_orbit, primary_tca_state = (
+            self.propag_utils.get_orbit_state_from_sat())
         self.secondary_initial_orbit, secondary_tca_state = self.set_orbit_state_for_secondary_object(
             primary_tca_state=primary_tca_state,
             secondary_mass=self.SECONDARY_SC_MASS
@@ -382,6 +412,8 @@ class CollisionAvoidanceEnv(gym.Env):
         # reset the records
         self.hist_actions = []
         self.hist_primary_states = [self.primary_current_pv]
+        self.hist_kepl_elements = [self.propag_utils.get_kepl_elem_from_state(sc_state=self.primary_current_state)]
+        self.hist_primary_at_collision_states = []
         self.time_step_idx = 0
 
         # get the orbital period and the indexes in the time discretisation corresponding to it
@@ -531,6 +563,14 @@ class CollisionAvoidanceEnv(gym.Env):
         self._primary_initial_state = x
 
     @property
+    def primary_init_kepl_orbit(self):
+        return self._primary_init_kepl_orbit
+
+    @primary_init_kepl_orbit.setter
+    def primary_init_kepl_orbit(self, x):
+        self._primary_init_kepl_orbit = x
+
+    @property
     def secondary_initial_orbit(self):
         return self._secondary_initial_orbit
 
@@ -635,6 +675,22 @@ class CollisionAvoidanceEnv(gym.Env):
         self._hist_primary_states = x
 
     @property
+    def hist_kepl_elements(self):
+        return self._hist_kepl_elements
+
+    @hist_kepl_elements.setter
+    def hist_kepl_elements(self, x):
+        self._hist_kepl_elements = x
+
+    @property
+    def hist_primary_at_collision_states(self):
+        return self._hist_primary_at_collision_states
+
+    @hist_primary_at_collision_states.setter
+    def hist_primary_at_collision_states(self, x):
+        self._hist_primary_at_collision_states = x
+
+    @property
     def time_step_idx(self):
         return self._time_step_idx
 
@@ -649,6 +705,38 @@ class CollisionAvoidanceEnv(gym.Env):
     @time_step_idx_last_orbit.setter
     def time_step_idx_last_orbit(self, x):
         self._time_step_idx_last_orbit = x
+
+    @property
+    def collision_avoided(self):
+        return self._collision_avoided
+
+    @collision_avoided.setter
+    def collision_avoided(self, x):
+        self._collision_avoided = x
+
+    @property
+    def returned_to_init_orbit(self):
+        return self._returned_to_init_orbit
+
+    @returned_to_init_orbit.setter
+    def returned_to_init_orbit(self, x):
+        self._returned_to_init_orbit = x
+
+    @property
+    def drifted_out_of_bounds(self):
+        return self._drifted_out_of_bounds
+
+    @drifted_out_of_bounds.setter
+    def drifted_out_of_bounds(self, x):
+        self._drifted_out_of_bounds = x
+
+    @property
+    def fuel_used_perc(self):
+        return self._fuel_used_perc
+
+    @fuel_used_perc.setter
+    def fuel_used_perc(self, x):
+        self._fuel_used_perc = x
 
     @property
     def absolute_time_discretisation_primary(self):
@@ -681,3 +769,11 @@ class CollisionAvoidanceEnv(gym.Env):
     @reward_utils.setter
     def reward_utils(self, x):
         self._reward_utils = x
+
+    @property
+    def truncated(self):
+        return self._truncated
+
+    @truncated.setter
+    def truncated(self, x):
+        self._truncated = x

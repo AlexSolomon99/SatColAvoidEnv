@@ -140,7 +140,22 @@ class PropagationUtilities:
         primary_orbit_cart = CartesianOrbit(primary_orbit_kepl)
         primary_sc_state = SpacecraftState(primary_orbit_cart, self.satellite.mass)
 
-        return primary_orbit_cart, primary_sc_state
+        return primary_orbit_kepl, primary_orbit_cart, primary_sc_state
+
+    def get_keplerian_orbit_from_sc_state(self, sc_state: SpacecraftState) -> KeplerianOrbit:
+        kepl_orbit = KeplerianOrbit(sc_state.getPVCoordinates(), self.ref_frame, sc_state.getDate(),
+                                    Constants.WGS84_EARTH_MU)
+
+        return kepl_orbit
+
+    def get_kepl_elem_from_state(self, sc_state: SpacecraftState):
+        kepl_orbit = self.get_keplerian_orbit_from_sc_state(sc_state=sc_state)
+        return self.get_kepl_elements_from_kepl_orb(kepl_orbit=kepl_orbit)
+
+    @staticmethod
+    def get_kepl_elements_from_kepl_orb(kepl_orbit: KeplerianOrbit):
+        return [kepl_orbit.getA(), kepl_orbit.getE(), kepl_orbit.getI(),
+                kepl_orbit.getPerigeeArgument(), kepl_orbit.getRightAscensionOfAscendingNode()]
 
     @property
     def satellite(self):
