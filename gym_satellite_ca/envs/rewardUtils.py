@@ -17,9 +17,9 @@ class RewardUtils:
     # Orbital differences allowed between the initial orbit and final orbit
     MAX_SMA_DIFF = 500.0  # meters
     MAX_ECC_DIFF = 0.001
-    MAX_INC_DIFF = 2.0  # deg
-    MAX_PAR_DIFF = 5.0  # deg
-    MAX_RAN_DIFF = 5.0  # deg
+    MAX_INC_DIFF = 1.0  # deg
+    MAX_PAR_DIFF = 10.0  # deg
+    MAX_RAN_DIFF = 1.0  # deg
 
     def __init__(self):
         pass
