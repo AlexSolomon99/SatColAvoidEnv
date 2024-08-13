@@ -162,9 +162,19 @@ class CollisionAvoidanceEnv(gym.Env):
                 "primary_sc_mass": np.array([self.satellite_mass])
                 }
 
-    def _get_info(self):
+    def get_intermediary_info(self):
+        return {
+            "time_step_idx": self.time_step_idx,
+            "collision_avoided": self.collision_avoided,
+            "returned_to_init_orbit": self.returned_to_init_orbit,
+            "drifted_out_of_bounds": self.drifted_out_of_bounds,
+            "fuel_used_perc": self.fuel_used_perc
+        }
+
+    def get_final_info(self):
         return {
             "primary_init_sequence": self.initial_primary_sc_state_sequence,
+            "init_kepl_elements": self.propag_utils.get_kepl_elements_from_kepl_orb(kepl_orbit=self.primary_init_kepl_orbit),
             "secondary_init_sequence": self.secondary_sc_state_sequence,
             "historical_actions": self.hist_actions,
             "historical_primary_sequence": self.hist_primary_states,
@@ -179,6 +189,11 @@ class CollisionAvoidanceEnv(gym.Env):
             "drifted_out_of_bounds": self.drifted_out_of_bounds,
             "fuel_used_perc": self.fuel_used_perc
         }
+
+    def _get_info(self):
+        if self._is_done() or self._is_truncated():
+            return self.get_final_info()
+        return self.get_intermediary_info()
 
     def _get_reward(self) -> float:
         """
@@ -247,13 +262,15 @@ class CollisionAvoidanceEnv(gym.Env):
         distance_to_earth_center = np.linalg.norm(self.primary_current_pv[:3])
         if distance_to_earth_center < self.MIN_ORBIT_DISTANCE_TO_EARTH:
             self.drifted_out_of_bounds = True
-            reward_ -= 10.0
+            reward_ -= self.reward_utils.MAX_PUNISHMENT_OUT_BOUND
             self.truncated = True
 
         if distance_to_earth_center > self.MAX_ORBIT_DISTANCE_TO_EARTH:
             out_of_bounds_reward = (self.reward_utils.BOUNDARY_EXIT_NORM_TERM *
                                     (distance_to_earth_center - self.MAX_ORBIT_DISTANCE_TO_EARTH))
             reward_ -= min([self.reward_utils.MAX_PUNISHMENT_OUT_BOUND, out_of_bounds_reward])
+            self.drifted_out_of_bounds = True
+            self.truncated = True
 
         # get the negative reward for using fuel
         fuel_used_perc = ((self.primary_initial_state.getMass() - self.satellite_mass) /
