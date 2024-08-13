@@ -28,11 +28,11 @@ class RewardUtils:
     def get_diff_between_kepl_elem(kepl_orbit_1: KeplerianOrbit, kepl_orbit_2: KeplerianOrbit):
 
         # get the differences between keplerian elements
-        sma_diff = abs(kepl_orbit_1.getA() - kepl_orbit_2.getA())
-        ecc_diff = abs(kepl_orbit_1.getE() - kepl_orbit_2.getE())
-        inc_diff = abs(kepl_orbit_1.getI() - kepl_orbit_2.getI())
-        par_diff = abs(kepl_orbit_1.getPerigeeArgument() - kepl_orbit_2.getPerigeeArgument())
-        ran_diff = abs(kepl_orbit_1.getRightAscensionOfAscendingNode() - kepl_orbit_2.getRightAscensionOfAscendingNode())
+        sma_diff = kepl_orbit_1.getA() - kepl_orbit_2.getA()
+        ecc_diff = kepl_orbit_1.getE() - kepl_orbit_2.getE()
+        inc_diff = kepl_orbit_1.getI() - kepl_orbit_2.getI()
+        par_diff = kepl_orbit_1.getPerigeeArgument() - kepl_orbit_2.getPerigeeArgument()
+        ran_diff = kepl_orbit_1.getRightAscensionOfAscendingNode() - kepl_orbit_2.getRightAscensionOfAscendingNode()
 
         return sma_diff, ecc_diff, inc_diff, par_diff, ran_diff
 
@@ -42,15 +42,15 @@ class RewardUtils:
         )
         reward = 0
 
-        if sma_diff > self.MAX_SMA_DIFF:
+        if abs(sma_diff) > self.MAX_SMA_DIFF:
             reward -= 1.0
-        if ecc_diff > self.MAX_ECC_DIFF:
+        if abs(ecc_diff) > self.MAX_ECC_DIFF:
             reward -= 1.0
-        if inc_diff > self.MAX_INC_DIFF:
+        if abs(inc_diff) > self.MAX_INC_DIFF:
             reward -= 1.0
-        if par_diff > self.MAX_PAR_DIFF:
+        if abs(par_diff) > self.MAX_PAR_DIFF:
             reward -= 1.0
-        if ran_diff > self.MAX_RAN_DIFF:
+        if abs(ran_diff) > self.MAX_RAN_DIFF:
             reward -= 1.0
 
         return reward
