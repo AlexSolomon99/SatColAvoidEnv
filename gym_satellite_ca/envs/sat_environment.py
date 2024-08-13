@@ -436,7 +436,7 @@ class CollisionAvoidanceEnv(gym.Env):
         # get the orbital period and the indexes in the time discretisation corresponding to it
         orbital_period = self.primary_initial_orbit.getKeplerianPeriod()
         num_time_steps_for_period = int(orbital_period // self.PROPAGATION_TIME_STEP)
-        self.time_step_idx_last_orbit = len(self.time_discretisation_primary) - 1 - num_time_steps_for_period
+        self.time_step_idx_last_orbit = int((len(self.time_discretisation_primary) - 1)//2) + num_time_steps_for_period
 
         # set the observation and the additional information
         observation = self._get_obs()
