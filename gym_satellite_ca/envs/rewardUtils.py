@@ -15,7 +15,7 @@ class RewardUtils:
     FUEL_USED_NORM_TERM = 10.0
 
     # Orbital differences allowed between the initial orbit and final orbit
-    MAX_SMA_DIFF = 800.0  # meters
+    MAX_SMA_DIFF = 500.0  # meters
     MAX_ECC_DIFF = 0.001
     MAX_INC_DIFF = 2.0  # deg
     MAX_PAR_DIFF = 5.0  # deg
