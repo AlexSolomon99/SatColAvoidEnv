@@ -14,6 +14,7 @@ from org.orekit.orbits import Orbit
 from org.orekit.propagation import SpacecraftState
 from org.orekit.propagation.conversion import DormandPrince853IntegratorBuilder
 from org.orekit.propagation.numerical import NumericalPropagator
+from org.orekit.propagation.analytical import KeplerianPropagator
 from org.orekit.time import AbsoluteDate
 from org.orekit.utils import Constants
 from org.orekit.frames import FramesFactory
@@ -73,6 +74,15 @@ class PropagationUtilities:
         rotation = FramesFactory.getEME2000().getTransformTo(sc_frame, ref_time).getRotation()
         attitude = FrameAlignedProvider(rotation)
         propagator.setAttitudeProvider(attitude)
+
+        return propagator
+
+    @staticmethod
+    def create_keplerian_propagator(orbit: Orbit, sc_mass: float):
+        propagator = KeplerianPropagator(orbit, Constants.WGS84_EARTH_MU)
+
+        spacecraft_state = SpacecraftState(orbit, sc_mass)
+        propagator.setInitialState(spacecraft_state)
 
         return propagator
 

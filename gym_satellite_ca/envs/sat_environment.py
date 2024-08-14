@@ -32,6 +32,9 @@ setup_orekit_curdir()
 UTC = TimeScalesFactory.getUTC()
 DEFAULT_REF_TIME = AbsoluteDate(2023, 6, 16, 0, 0, 0.0, UTC)
 DEFAULT_REF_FRAME = FramesFactory.getGCRF()
+DEFAULT_RESET_OPTIONS = {
+    "propagator": "numerical"
+}
 
 
 class CollisionAvoidanceEnv(gym.Env):
@@ -148,12 +151,11 @@ class CollisionAvoidanceEnv(gym.Env):
         self._drifted_out_of_bounds = False
         self._fuel_used_perc = 0.0
 
-        # reset the environment
+        # set up some environment variables
         self._truncated = False
         self.window = None
         self.clock = None
         self.close()
-        self.reset()
 
     def _get_obs(self):
         return {"primary_current_pv": self.primary_current_pv,
@@ -336,7 +338,7 @@ class CollisionAvoidanceEnv(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=DEFAULT_RESET_OPTIONS):
         # We need the following line to seed self.np_random
         super().reset(seed=seed)
 
@@ -363,31 +365,40 @@ class CollisionAvoidanceEnv(gym.Env):
         )
 
         # set the propagators for the primary and secondary satellites
-        self.primary_propagator = self.propag_utils.create_propagator(orbit=self.primary_initial_orbit,
-                                                                      sc_mass=self.satellite.mass,
-                                                                      sc_area=self.satellite.area,
-                                                                      sc_reflection=self.satellite.reflection_idx,
-                                                                      sc_frame=self.ref_frame,
-                                                                      ref_time=self.ref_time,
-                                                                      earth_order=self.earth_order,
-                                                                      earth_degree=self.earth_degree,
-                                                                      use_perturbations=self.use_perturbations,
-                                                                      int_min_step=self.INTEGRATOR_MIN_STEP,
-                                                                      int_max_step=self.INTEGRATOR_MAX_STEP,
-                                                                      int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
+        if options["propagator"] == "numerical":
+            self.primary_propagator = self.propag_utils.create_propagator(orbit=self.primary_initial_orbit,
+                                                                          sc_mass=self.satellite.mass,
+                                                                          sc_area=self.satellite.area,
+                                                                          sc_reflection=self.satellite.reflection_idx,
+                                                                          sc_frame=self.ref_frame,
+                                                                          ref_time=self.ref_time,
+                                                                          earth_order=self.earth_order,
+                                                                          earth_degree=self.earth_degree,
+                                                                          use_perturbations=self.use_perturbations,
+                                                                          int_min_step=self.INTEGRATOR_MIN_STEP,
+                                                                          int_max_step=self.INTEGRATOR_MAX_STEP,
+                                                                          int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
 
-        self.secondary_propagator = self.propag_utils.create_propagator(orbit=self.secondary_initial_orbit,
-                                                                        sc_mass=self.SECONDARY_SC_MASS,
-                                                                        sc_area=self.SECONDARY_SC_AREA,
-                                                                        sc_reflection=self.SECONDARY_REFLECTION_IDX,
-                                                                        sc_frame=self.ref_frame,
-                                                                        ref_time=self.ref_time,
-                                                                        earth_order=self.earth_order,
-                                                                        earth_degree=self.earth_degree,
-                                                                        use_perturbations=self.use_perturbations,
-                                                                        int_min_step=self.INTEGRATOR_MIN_STEP,
-                                                                        int_max_step=self.INTEGRATOR_MAX_STEP,
-                                                                        int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
+            self.secondary_propagator = self.propag_utils.create_propagator(orbit=self.secondary_initial_orbit,
+                                                                            sc_mass=self.SECONDARY_SC_MASS,
+                                                                            sc_area=self.SECONDARY_SC_AREA,
+                                                                            sc_reflection=self.SECONDARY_REFLECTION_IDX,
+                                                                            sc_frame=self.ref_frame,
+                                                                            ref_time=self.ref_time,
+                                                                            earth_order=self.earth_order,
+                                                                            earth_degree=self.earth_degree,
+                                                                            use_perturbations=self.use_perturbations,
+                                                                            int_min_step=self.INTEGRATOR_MIN_STEP,
+                                                                            int_max_step=self.INTEGRATOR_MAX_STEP,
+                                                                            int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
+        elif options["propagator"] == "keplerian":
+            self.primary_propagator = self.propag_utils.create_keplerian_propagator(orbit=self.primary_initial_orbit,
+                                                                                    sc_mass=self.satellite.mass)
+
+            self.secondary_propagator = self.propag_utils.create_keplerian_propagator(orbit=self.secondary_initial_orbit,
+                                                                                      sc_mass=self.SECONDARY_SC_MASS)
+        else:
+            raise KeyError(f"The 'propagator' key in the options dictionary is not properly set.")
 
         # set the initial states of the propagators
         primary_propagator_initial_date = self.primary_propagator.getInitialState().getDate()
