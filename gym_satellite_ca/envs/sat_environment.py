@@ -61,7 +61,7 @@ class CollisionAvoidanceEnv(gym.Env):
     INITIAL_ORBIT_RADIUS_BOUND = 300.0  # meters
 
     # Collision constants
-    COLLISION_MIN_DISTANCE = 500.0  # meters
+    COLLISION_MIN_DISTANCE = 1000.0  # meters
 
     def __init__(self,
                  satellite: satDataClass.SatelliteData,
