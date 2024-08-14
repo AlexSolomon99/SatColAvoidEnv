@@ -43,15 +43,15 @@ class RewardUtils:
         reward = 0
 
         if abs(sma_diff) > self.MAX_SMA_DIFF:
-            reward -= 1.0
+            reward -= 0.2
         if abs(ecc_diff) > self.MAX_ECC_DIFF:
-            reward -= 1.0
+            reward -= 0.2
         if abs(inc_diff) > self.MAX_INC_DIFF:
-            reward -= 1.0
+            reward -= 0.2
         if abs(par_diff) > self.MAX_PAR_DIFF:
-            reward -= 1.0
+            reward -= 0.2
         if abs(ran_diff) > self.MAX_RAN_DIFF:
-            reward -= 1.0
+            reward -= 0.2
 
         return reward
 
