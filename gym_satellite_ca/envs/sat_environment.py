@@ -338,8 +338,10 @@ class CollisionAvoidanceEnv(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
-    def reset(self, seed=None, options=DEFAULT_RESET_OPTIONS):
+    def reset(self, seed=None, options=None):
         # We need the following line to seed self.np_random
+        if options is None:
+            options = DEFAULT_RESET_OPTIONS
         super().reset(seed=seed)
 
         # reset the reference time and the position of the satellite in the orbit
