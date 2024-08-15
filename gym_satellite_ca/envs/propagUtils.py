@@ -82,7 +82,7 @@ class PropagationUtilities:
         propagator = KeplerianPropagator(orbit, Constants.WGS84_EARTH_MU)
 
         spacecraft_state = SpacecraftState(orbit, sc_mass)
-        propagator.setInitialState(spacecraft_state)
+        propagator.resetInitialState(spacecraft_state)
 
         return propagator
 
