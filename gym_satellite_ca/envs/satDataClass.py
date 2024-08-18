@@ -74,7 +74,6 @@ class SatelliteData:
         if self.angle_type == self.ACCEPTED_ANGLE_TYPES["DEGREE_TYPE"]:
             return None
 
-        self.ecc = self.rad_to_deg(self.ecc)
         self.inc = self.rad_to_deg(self.inc)
         self.argp = self.rad_to_deg(self.argp)
         self.raan = self.rad_to_deg(self.raan)
@@ -86,7 +85,6 @@ class SatelliteData:
         if self.angle_type == self.ACCEPTED_ANGLE_TYPES["RADIAN_TYPE"]:
             return None
 
-        self.ecc = self.deg_to_rad(self.ecc)
         self.inc = self.deg_to_rad(self.inc)
         self.argp = self.deg_to_rad(self.argp)
         self.raan = self.deg_to_rad(self.raan)

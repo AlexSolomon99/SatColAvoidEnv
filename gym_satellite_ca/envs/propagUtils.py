@@ -1,6 +1,6 @@
 from typing import List
 
-from org.orekit.attitudes import FrameAlignedProvider
+from org.orekit.attitudes import FrameAlignedProvider, LofOffset
 from org.orekit.bodies import CelestialBodyFactory
 from org.orekit.bodies import OneAxisEllipsoid
 from org.orekit.forces.gravity import HolmesFeatherstoneAttractionModel
@@ -9,8 +9,8 @@ from org.orekit.forces.gravity import ThirdBodyAttraction
 from org.orekit.forces.gravity.potential import GravityFieldFactory
 from org.orekit.forces.radiation import IsotropicRadiationSingleCoefficient
 from org.orekit.forces.radiation import SolarRadiationPressure
-from org.orekit.frames import Frame
-from org.orekit.orbits import Orbit
+from org.orekit.frames import Frame, LOFType
+from org.orekit.orbits import Orbit, OrbitType
 from org.orekit.propagation import SpacecraftState
 from org.orekit.propagation.conversion import DormandPrince853IntegratorBuilder
 from org.orekit.propagation.numerical import NumericalPropagator
@@ -36,7 +36,7 @@ class PropagationUtilities:
 
     @staticmethod
     def create_propagator(orbit: Orbit, sc_mass: float, sc_area: float, sc_reflection: float, sc_frame: Frame,
-                          ref_time: AbsoluteDate, earth_order: int, earth_degree: int,
+                          earth_order: int, earth_degree: int,
                           use_perturbations: bool = True, int_min_step: float = 1.0, int_max_step: float = 200.0,
                           int_err_threshold: float = 1.0) -> NumericalPropagator:
         # create the propagator
@@ -71,9 +71,7 @@ class PropagationUtilities:
                                        IsotropicRadiationSingleCoefficient(sc_area,
                                                                            sc_reflection)))
 
-        rotation = FramesFactory.getEME2000().getTransformTo(sc_frame, ref_time).getRotation()
-        attitude = FrameAlignedProvider(rotation)
-        propagator.setAttitudeProvider(attitude)
+        propagator.setAttitudeProvider(LofOffset(sc_frame, LOFType.VNC))
 
         return propagator
 
@@ -103,7 +101,7 @@ class PropagationUtilities:
 
     def propagate_sc_states(self, propagator: NumericalPropagator,
                             initial_state_for_reset: SpacecraftState,
-                            time_discretisation: np.array) -> np.array:
+                            time_discretisation: np.array, UTC) -> np.array:
         # instantiate propagation auxiliary variables
         orbital_states = []
         propag_target_idx = 0
@@ -113,8 +111,17 @@ class PropagationUtilities:
         propagator.resetInitialState(initial_state_for_reset)
         propagation_start_time = initial_state_for_reset.getDate()
 
+        # set the time discretization according to the propag start time
+        while propag_target_idx < num_propagations:
+            # check if the propagation start time is ahead of the discretised times
+            if propagation_start_time.offsetFrom(time_discretisation[propag_target_idx], UTC) > 0.5:
+                propag_target_idx += 1
+                continue
+            break
+
         # get the positions of the satellite at the required time
         while propag_target_idx < num_propagations:
+
             # propagate the state to the desired date and save the position
             sc_state = self.propagate_(propagator=propagator,
                                        start_date=propagation_start_time,
@@ -145,12 +152,15 @@ class PropagationUtilities:
         # define the orbit of the current object
         primary_orbit_kepl = KeplerianOrbit(self.satellite.sma, self.satellite.ecc, self.satellite.inc,
                                             self.satellite.argp, self.satellite.raan, self.satellite.tran,
-                                            PositionAngleType.MEAN, self.ref_frame, self.ref_time,
+                                            PositionAngleType.TRUE, self.ref_frame, self.ref_time,
                                             Constants.WGS84_EARTH_MU)
         primary_orbit_cart = CartesianOrbit(primary_orbit_kepl)
         primary_sc_state = SpacecraftState(primary_orbit_cart, self.satellite.mass)
 
         return primary_orbit_kepl, primary_orbit_cart, primary_sc_state
+
+    def get_kepl_orbit_from_cartesian_orbit(self, cartesian_orbit: CartesianOrbit):
+        return KeplerianOrbit(cartesian_orbit)
 
     def get_keplerian_orbit_from_sc_state(self, sc_state: SpacecraftState) -> KeplerianOrbit:
         kepl_orbit = KeplerianOrbit(sc_state.getPVCoordinates(), self.ref_frame, sc_state.getDate(),
@@ -163,9 +173,23 @@ class PropagationUtilities:
         return self.get_kepl_elements_from_kepl_orb(kepl_orbit=kepl_orbit)
 
     @staticmethod
+    def get_pv_diff_between_sequences_of_states(primary_sc_states: np.array,
+                                                secondary_sc_states: np.array) -> list:
+        pv_states_primary = primary_sc_states[:, :3]
+        pv_states_secondary = secondary_sc_states[:, :3]
+
+        seq_of_diffs = []
+        for idx, pv_primary in enumerate(pv_states_primary):
+            current_diff = np.linalg.norm(pv_primary - pv_states_secondary[idx])
+            seq_of_diffs.append(current_diff)
+
+        return seq_of_diffs
+
+    @staticmethod
     def get_kepl_elements_from_kepl_orb(kepl_orbit: KeplerianOrbit):
-        return [kepl_orbit.getA(), kepl_orbit.getE(), kepl_orbit.getI(),
-                kepl_orbit.getPerigeeArgument(), kepl_orbit.getRightAscensionOfAscendingNode()]
+        return np.array([kepl_orbit.getA(), kepl_orbit.getE(), kepl_orbit.getI(),
+                         kepl_orbit.getPerigeeArgument(), kepl_orbit.getRightAscensionOfAscendingNode(),
+                         kepl_orbit.getTrueAnomaly()])
 
     @property
     def satellite(self):
