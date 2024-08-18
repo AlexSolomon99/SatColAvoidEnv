@@ -15,11 +15,18 @@ class RewardUtils:
     FUEL_USED_NORM_TERM = 10000.0
 
     # Orbital differences allowed between the initial orbit and final orbit
-    MAX_SMA_DIFF = 500.0  # meters
+    MAX_SMA_DIFF = 200.0  # meters
     MAX_ECC_DIFF = 0.001
     MAX_INC_DIFF = 1.0 * np.pi / 180.0  # deg
     MAX_PAR_DIFF = 10.0 * np.pi / 180.0  # deg
     MAX_RAN_DIFF = 1.0 * np.pi / 180.0  # deg
+
+    # reward weights
+    wa = 1e-5
+    we = 20
+    wi = 15
+    wpa = 10
+    wran = 15
 
     def __init__(self):
         pass
@@ -43,15 +50,15 @@ class RewardUtils:
         reward = 0
 
         if abs(sma_diff) > self.MAX_SMA_DIFF:
-            reward -= 0.2
+            reward -= self.wa * abs(sma_diff)
         if abs(ecc_diff) > self.MAX_ECC_DIFF:
-            reward -= 0.2
+            reward -= self.we * abs(ecc_diff)
         if abs(inc_diff) > self.MAX_INC_DIFF:
-            reward -= 0.2
+            reward -= self.wi * abs(inc_diff)
         if abs(par_diff) > self.MAX_PAR_DIFF:
-            reward -= 0.2
+            reward -= self.wpa * abs(par_diff)
         if abs(ran_diff) > self.MAX_RAN_DIFF:
-            reward -= 0.2
+            reward -= self.wran * abs(ran_diff)
 
         return reward
 
