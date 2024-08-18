@@ -17,7 +17,7 @@ from org.orekit.time import AbsoluteDate
 from org.orekit.time import TimeScalesFactory
 from org.orekit.utils import Constants
 from org.orekit.utils import PVCoordinates
-from org.orekit.frames import FramesFactory
+from org.orekit.frames import FramesFactory, LOFType
 from org.orekit.propagation.numerical import NumericalPropagator
 from orekit.pyhelpers import download_orekit_data_curdir, setup_orekit_curdir
 
@@ -31,7 +31,8 @@ setup_orekit_curdir()
 # set up default parameters for the environment
 UTC = TimeScalesFactory.getUTC()
 DEFAULT_REF_TIME = AbsoluteDate(2023, 6, 16, 0, 0, 0.0, UTC)
-DEFAULT_REF_FRAME = FramesFactory.getGCRF()
+DEFAULT_REF_FRAME = FramesFactory.getEME2000()
+LOCAL_ORBITAL_FRAME = LOFType.LVLH_CCSDS
 DEFAULT_RESET_OPTIONS = {
     "propagator": "numerical"
 }
@@ -64,7 +65,7 @@ class CollisionAvoidanceEnv(gym.Env):
     INITIAL_ORBIT_RADIUS_BOUND = 300.0  # meters
 
     # Collision constants
-    COLLISION_MIN_DISTANCE = 1000.0  # meters
+    COLLISION_MIN_DISTANCE = 2000.0  # meters
 
     def __init__(self,
                  satellite: satDataClass.SatelliteData,
@@ -90,9 +91,12 @@ class CollisionAvoidanceEnv(gym.Env):
         self._primary_initial_orbit = None
         self._primary_initial_state = None
         self._initial_primary_sc_state_sequence = None
+        self._primary_initial_kepl_elements = None
         self._primary_current_state = None
         self._secondary_initial_orbit = None
         self._secondary_initial_state = None
+        self._collision_diffs = None
+        self._min_collision_diff = None
 
         # initialise time step and time bound
         self._time_discretisation_primary = None
@@ -106,6 +110,7 @@ class CollisionAvoidanceEnv(gym.Env):
 
         # instantiate the propagators for the primary and secondary satellites
         self._primary_propagator = None
+        self._primary_keplerian_propagator = None
         self._secondary_propagator = None
 
         # set the action space
@@ -114,22 +119,10 @@ class CollisionAvoidanceEnv(gym.Env):
                                        shape=(3,), dtype=np.float64)
 
         # set the observation space
-        self.observation_space = spaces.Dict(
-            {
-                "primary_current_pv": spaces.Box(low=-np.inf,
-                                                 high=np.inf,
-                                                 shape=(6,),
-                                                 dtype=np.float64),
-                "secondary_sc_state_seq": spaces.Box(low=-np.inf,
-                                                     high=np.inf,
-                                                     shape=(len(self.time_discretisation_secondary), 6),
-                                                     dtype=np.float64),
-                "tca_time_lapse": spaces.Box(low=self.time_discretisation_primary[0] - 10.0,
-                                             high=abs(self.time_discretisation_primary[0]) + 10.0,
-                                             shape=(1,), dtype=np.float64),
-                "primary_sc_mass": spaces.Box(low=0, high=np.inf, shape=(1,), dtype=np.float64)
-            }
-        )
+        self.observation_space = spaces.Box(low=-np.inf,
+                                            high=np.inf,
+                                            shape=(9,),
+                                            dtype=np.float64)
 
         # instantiate the components of the observation space
         self._primary_current_pv = None
@@ -158,11 +151,15 @@ class CollisionAvoidanceEnv(gym.Env):
         self.close()
 
     def _get_obs(self):
-        return {"primary_current_pv": self.primary_current_pv,
-                "secondary_sc_state_seq": self.secondary_sc_state_sequence,
-                "tca_time_lapse": np.array([self.tca_time_lapse]),
-                "primary_sc_mass": np.array([self.satellite_mass])
-                }
+        data_dict = {"primary_current_pv": self.primary_current_pv,
+                     "min_collision_diff": np.array([self.min_collision_diff]),
+                     "tca_time_lapse": np.array([self.tca_time_lapse]),
+                     "primary_sc_mass": np.array([self.satellite_mass])
+                     }
+        observations = []
+        for key in data_dict.keys():
+            observations.extend(data_dict[key].tolist())
+        return np.array(observations)
 
     def get_intermediary_info(self):
         return {
@@ -176,7 +173,8 @@ class CollisionAvoidanceEnv(gym.Env):
     def get_final_info(self):
         return {
             "primary_init_sequence": self.initial_primary_sc_state_sequence,
-            "init_kepl_elements": self.propag_utils.get_kepl_elements_from_kepl_orb(kepl_orbit=self.primary_init_kepl_orbit),
+            "init_kepl_elements": self.propag_utils.get_kepl_elements_from_kepl_orb(
+                kepl_orbit=self.primary_init_kepl_orbit),
             "secondary_init_sequence": self.secondary_sc_state_sequence,
             "historical_actions": self.hist_actions,
             "historical_primary_sequence": self.hist_primary_states,
@@ -227,63 +225,37 @@ class CollisionAvoidanceEnv(gym.Env):
 
         :return: A floating point number representing the reward the agent receives at the end of the episode.
         """
-        # instantiate the step reward
-        reward_ = 0.0
 
         # get the reward for avoiding the collision (punishment for not avoiding it)
         # check if the current state of the primary corresponds to a state in which the position of the secondary
         # satellite is known and compute the distance between the states
-        current_absolute_time = self.time_discretisation_primary[self.time_step_idx]
-        if current_absolute_time in self.time_discretisation_secondary:
-            idx_of_time_secondary = np.where(self.time_discretisation_secondary == current_absolute_time)[0][0]
-
-            state_from_primary_orbit = self.primary_current_pv[:3]
-            state_from_secondary_orbit = self.secondary_sc_state_sequence[idx_of_time_secondary, :3]
-            diff_state_pvs = self.reward_utils.compute_dist_between_states(state_from_primary_orbit,
-                                                                           state_from_secondary_orbit)
-
-            # save the primary state
-            self.hist_primary_at_collision_states.append(copy.deepcopy(self.primary_current_pv))
-
-            if diff_state_pvs < self.COLLISION_MIN_DISTANCE:
-                self.collision_avoided = False
-                reward_ -= (self.reward_utils.COLLISION_AVOIDANCE_NORM_TERM *
-                            (self.COLLISION_MIN_DISTANCE - diff_state_pvs))
+        collision_reward_contrib = - max(
+            (self.COLLISION_MIN_DISTANCE - self.min_collision_diff) / self.COLLISION_MIN_DISTANCE, 0)
 
         # get the negative reward for not returning to the initial orbit by the end of the event
+        return_init_orbit_contrib = 0
         if self.time_step_idx >= self.time_step_idx_last_orbit:
-            current_kepl_orbit = self.propag_utils.get_keplerian_orbit_from_sc_state(sc_state=self.primary_current_state)
-            init_to_final_comp_reward = self.reward_utils.compare_kepl_orbits(kepl_orbit_1=current_kepl_orbit,
-                                                                              kepl_orbit_2=self.primary_init_kepl_orbit)
-            if init_to_final_comp_reward < 0:
-                self.returned_to_init_orbit = False
-            reward_ += init_to_final_comp_reward
+            return_init_orbit_contrib = self.reward_utils.compute_reward_for_orbit_return(
+                current_kepl_elem=self.primary_current_pv,
+                initial_kepl_elem=self.primary_initial_kepl_elements)
 
-        # get the negative reward for going outside the orbital bound, which is an extreme deviation from the
-        # initial orbit
-        distance_to_earth_center = np.linalg.norm(self.primary_current_pv[:3])
-        if distance_to_earth_center < self.MIN_ORBIT_DISTANCE_TO_EARTH:
-            self.drifted_out_of_bounds = True
-            reward_ -= self.reward_utils.MAX_PUNISHMENT_OUT_BOUND
-            self.truncated = True
-
-        if distance_to_earth_center > self.MAX_ORBIT_DISTANCE_TO_EARTH:
-            out_of_bounds_reward = (self.reward_utils.BOUNDARY_EXIT_NORM_TERM *
-                                    (distance_to_earth_center - self.MAX_ORBIT_DISTANCE_TO_EARTH))
-            reward_ -= min([self.reward_utils.MAX_PUNISHMENT_OUT_BOUND, out_of_bounds_reward])
-            self.drifted_out_of_bounds = True
-            self.truncated = True
+            if return_init_orbit_contrib == 0:
+                self.truncated = True
+                return 1.0
 
         # get the negative reward for using fuel
         fuel_used_perc = ((self.primary_initial_state.getMass() - self.satellite_mass) /
                           self.primary_initial_state.getMass())
         self.fuel_used_perc = fuel_used_perc
-        reward_ -= self.reward_utils.FUEL_USED_NORM_TERM * fuel_used_perc
+        fuel_usage_contrib = - self.reward_utils.FUEL_USED_NORM_TERM * fuel_used_perc
+
+        # compute the overall reward
+        reward_ = collision_reward_contrib + return_init_orbit_contrib + fuel_usage_contrib
 
         return reward_
 
     def _is_done(self) -> bool:
-        return self._time_step_idx >= len(self.primary_sc_state_sequence) - 1
+        return self._time_step_idx >= len(self.absolute_time_discretisation_primary) - 1
 
     def _is_truncated(self) -> bool:
         return self.truncated
@@ -315,19 +287,37 @@ class CollisionAvoidanceEnv(gym.Env):
         self.primary_current_state = self.propag_utils.propagate_(propagator=self.primary_propagator,
                                                                   start_date=current_time,
                                                                   target_date=new_time)
-        self.primary_current_pv = self.propag_utils.get_pv_from_state(self.primary_current_state)
 
+        # get the estimated collision differences
+        if new_time.offsetFrom(self.absolute_time_discretisation_secondary[-1], UTC) < 0:
+            self.primary_keplerian_propagator.resetInitialState(self.primary_current_state)
+            self.secondary_propagator.resetInitialState(self.secondary_initial_state)
+            primary_sat_states = self.propag_utils.propagate_sc_states(propagator=self.primary_keplerian_propagator,
+                                                                       initial_state_for_reset=self.primary_current_state,
+                                                                       time_discretisation=self.absolute_time_discretisation_secondary,
+                                                                       UTC=UTC)
+            secondary_sat_states = self.propag_utils.propagate_sc_states(propagator=self.secondary_propagator,
+                                                                         initial_state_for_reset=self.secondary_initial_state,
+                                                                         time_discretisation=self.absolute_time_discretisation_secondary,
+                                                                         UTC=UTC)
+            if len(secondary_sat_states) > len(primary_sat_states):
+                secondary_sat_states = secondary_sat_states[-len(primary_sat_states):]
+            self.collision_diffs = self.propag_utils.get_pv_diff_between_sequences_of_states(
+                primary_sc_states=primary_sat_states,
+                secondary_sc_states=secondary_sat_states)
+        else:
+            self.collision_diffs = [self.COLLISION_MIN_DISTANCE + 1]
+
+        # set the observations from this step
+        self.primary_current_pv = copy.deepcopy(self.propag_utils.get_kepl_elem_from_state(self.primary_current_state))
+        self.min_collision_diff = min(self.collision_diffs)
         self.satellite_mass = self.primary_current_state.getMass()
         self.tca_time_lapse = self.ref_time.offsetFrom(new_time, UTC)
 
         # add to the historical recordings
         self.hist_actions.append(action)
         self.hist_primary_states.append(copy.deepcopy(self.primary_current_pv))
-        self.hist_kepl_elements.append(self.propag_utils.get_kepl_elem_from_state(sc_state=self.primary_current_state))
-
-        # check if the current state indicates the termination of the episode
-        terminated = self._is_done()
-        truncated = self._is_truncated()
+        self.hist_kepl_elements.append(copy.deepcopy(self.primary_current_pv))
 
         # set the observation and the additional information
         observation = self._get_obs()
@@ -335,6 +325,10 @@ class CollisionAvoidanceEnv(gym.Env):
 
         # compute the reward
         reward = self._get_reward()
+
+        # check if the current state indicates the termination of the episode
+        terminated = self._is_done()
+        truncated = self._is_truncated()
 
         return observation, reward, terminated, truncated, info
 
@@ -367,48 +361,38 @@ class CollisionAvoidanceEnv(gym.Env):
         )
 
         # set the propagators for the primary and secondary satellites
-        if options["propagator"] == "numerical":
-            self.primary_propagator = self.propag_utils.create_propagator(orbit=self.primary_initial_orbit,
-                                                                          sc_mass=self.satellite.mass,
-                                                                          sc_area=self.satellite.area,
-                                                                          sc_reflection=self.satellite.reflection_idx,
-                                                                          sc_frame=self.ref_frame,
-                                                                          ref_time=self.ref_time,
-                                                                          earth_order=self.earth_order,
-                                                                          earth_degree=self.earth_degree,
-                                                                          use_perturbations=self.use_perturbations,
-                                                                          int_min_step=self.INTEGRATOR_MIN_STEP,
-                                                                          int_max_step=self.INTEGRATOR_MAX_STEP,
-                                                                          int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
+        self.primary_propagator = self.propag_utils.create_propagator(orbit=self.primary_init_kepl_orbit,
+                                                                      sc_mass=self.satellite.mass,
+                                                                      sc_area=self.satellite.area,
+                                                                      sc_reflection=self.satellite.reflection_idx,
+                                                                      sc_frame=self.ref_frame,
+                                                                      earth_order=self.earth_order,
+                                                                      earth_degree=self.earth_degree,
+                                                                      use_perturbations=self.use_perturbations,
+                                                                      int_min_step=self.INTEGRATOR_MIN_STEP,
+                                                                      int_max_step=self.INTEGRATOR_MAX_STEP,
+                                                                      int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
+        self.primary_keplerian_propagator = self.propag_utils.create_keplerian_propagator(
+            orbit=self.primary_initial_orbit,
+            sc_mass=self.satellite.mass)
 
-            self.secondary_propagator = self.propag_utils.create_propagator(orbit=self.secondary_initial_orbit,
-                                                                            sc_mass=self.SECONDARY_SC_MASS,
-                                                                            sc_area=self.SECONDARY_SC_AREA,
-                                                                            sc_reflection=self.SECONDARY_REFLECTION_IDX,
-                                                                            sc_frame=self.ref_frame,
-                                                                            ref_time=self.ref_time,
-                                                                            earth_order=self.earth_order,
-                                                                            earth_degree=self.earth_degree,
-                                                                            use_perturbations=self.use_perturbations,
-                                                                            int_min_step=self.INTEGRATOR_MIN_STEP,
-                                                                            int_max_step=self.INTEGRATOR_MAX_STEP,
-                                                                            int_err_threshold=self.INTEGRATOR_ERR_THRESHOLD)
-        elif options["propagator"] == "keplerian":
-            self.primary_propagator = self.propag_utils.create_keplerian_propagator(orbit=self.primary_initial_orbit,
-                                                                                    sc_mass=self.satellite.mass)
-
-            self.secondary_propagator = self.propag_utils.create_keplerian_propagator(orbit=self.secondary_initial_orbit,
-                                                                                      sc_mass=self.SECONDARY_SC_MASS)
-        else:
-            raise KeyError(f"The 'propagator' key in the options dictionary is not properly set.")
+        self.secondary_propagator = self.propag_utils.create_keplerian_propagator(
+            orbit=self.secondary_initial_orbit,
+            sc_mass=self.SECONDARY_SC_MASS)
 
         # set the initial states of the propagators
         primary_propagator_initial_date = self.primary_propagator.getInitialState().getDate()
+        primary_keplerian_propagator_initial_date = self.primary_keplerian_propagator.getInitialState().getDate()
         secondary_propagator_initial_date = self.secondary_propagator.getInitialState().getDate()
+
         self.primary_initial_state = self.propag_utils.propagate_(propagator=self.primary_propagator,
                                                                   start_date=primary_propagator_initial_date,
                                                                   target_date=self.absolute_time_discretisation_primary[
                                                                       0])
+        primary_collision_state = self.propag_utils.propagate_(propagator=self.primary_keplerian_propagator,
+                                                               start_date=primary_keplerian_propagator_initial_date,
+                                                               target_date=self.absolute_time_discretisation_secondary[
+                                                                   0])
         self.secondary_initial_state = self.propag_utils.propagate_(propagator=self.secondary_propagator,
                                                                     start_date=secondary_propagator_initial_date,
                                                                     target_date=
@@ -418,24 +402,29 @@ class CollisionAvoidanceEnv(gym.Env):
         self.primary_propagator.resetInitialState(self.primary_initial_state)
         self.secondary_propagator.resetInitialState(self.secondary_initial_state)
 
-        # compute the spacecraft's sequences
-        primary_sat_states = self.propag_utils.propagate_sc_states(propagator=self.primary_propagator,
-                                                                   initial_state_for_reset=self.primary_initial_state,
-                                                                   time_discretisation=self.absolute_time_discretisation_primary)
+        # compute the spacecraft's states at the times of collision
+        primary_sat_states = self.propag_utils.propagate_sc_states(propagator=self.primary_keplerian_propagator,
+                                                                   initial_state_for_reset=primary_collision_state,
+                                                                   time_discretisation=self.absolute_time_discretisation_secondary,
+                                                                   UTC=UTC)
         secondary_sat_states = self.propag_utils.propagate_sc_states(propagator=self.secondary_propagator,
                                                                      initial_state_for_reset=self.secondary_initial_state,
-                                                                     time_discretisation=self.absolute_time_discretisation_secondary)
+                                                                     time_discretisation=self.absolute_time_discretisation_secondary,
+                                                                     UTC=UTC)
 
-        # set the initial state sequence for the primary
-        self.initial_primary_sc_state_sequence = copy.deepcopy(primary_sat_states)
+        # compute the deltas of the states at the times of collision
+        self.collision_diffs = self.propag_utils.get_pv_diff_between_sequences_of_states(
+            primary_sc_states=primary_sat_states,
+            secondary_sc_states=secondary_sat_states)
 
         # set the current state of the primary satellite
         self.primary_current_state = self.primary_initial_state
+        self.primary_initial_kepl_elements = copy.deepcopy(
+            self.propag_utils.get_kepl_elem_from_state(self.primary_initial_state))
 
         # set the components of the initial observation
-        self.primary_current_pv = copy.deepcopy(primary_sat_states[0])
-        self.primary_sc_state_sequence = copy.deepcopy(primary_sat_states)
-        self.secondary_sc_state_sequence = copy.deepcopy(secondary_sat_states)
+        self.primary_current_pv = copy.deepcopy(self.propag_utils.get_kepl_elem_from_state(self.primary_initial_state))
+        self.min_collision_diff = min(self.collision_diffs)
         self.tca_time_lapse = self.ref_time.offsetFrom(self.absolute_time_discretisation_primary[0], UTC)
         self.satellite_mass = self.primary_initial_state.getMass()
 
@@ -449,7 +438,8 @@ class CollisionAvoidanceEnv(gym.Env):
         # get the orbital period and the indexes in the time discretisation corresponding to it
         orbital_period = self.primary_initial_orbit.getKeplerianPeriod()
         num_time_steps_for_period = int(orbital_period // self.PROPAGATION_TIME_STEP)
-        self.time_step_idx_last_orbit = int((len(self.time_discretisation_primary) - 1)//2) + num_time_steps_for_period
+        self.time_step_idx_last_orbit = int(
+            (len(self.time_discretisation_primary) - 1) // 2) + num_time_steps_for_period
 
         # set the observation and the additional information
         observation = self._get_obs()
@@ -639,6 +629,38 @@ class CollisionAvoidanceEnv(gym.Env):
     @primary_propagator.setter
     def primary_propagator(self, x):
         self._primary_propagator = x
+
+    @property
+    def primary_keplerian_propagator(self) -> NumericalPropagator:
+        return self._primary_keplerian_propagator
+
+    @primary_keplerian_propagator.setter
+    def primary_keplerian_propagator(self, x):
+        self._primary_keplerian_propagator = x
+
+    @property
+    def collision_diffs(self):
+        return self._collision_diffs
+
+    @collision_diffs.setter
+    def collision_diffs(self, x):
+        self._collision_diffs = x
+
+    @property
+    def min_collision_diff(self):
+        return self._min_collision_diff
+
+    @min_collision_diff.setter
+    def min_collision_diff(self, x):
+        self._min_collision_diff = x
+
+    @property
+    def primary_initial_kepl_elements(self):
+        return self._primary_initial_kepl_elements
+
+    @primary_initial_kepl_elements.setter
+    def primary_initial_kepl_elements(self, x):
+        self._primary_initial_kepl_elements = x
 
     @property
     def secondary_propagator(self):

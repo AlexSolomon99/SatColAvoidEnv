@@ -12,14 +12,14 @@ class RewardUtils:
     MAX_PUNISHMENT_RETURN = 5.0
     BOUNDARY_EXIT_NORM_TERM = 1e-3
     MAX_PUNISHMENT_OUT_BOUND = 10
-    FUEL_USED_NORM_TERM = 10.0
+    FUEL_USED_NORM_TERM = 10000.0
 
     # Orbital differences allowed between the initial orbit and final orbit
     MAX_SMA_DIFF = 500.0  # meters
     MAX_ECC_DIFF = 0.001
-    MAX_INC_DIFF = 1.0  # deg
-    MAX_PAR_DIFF = 10.0  # deg
-    MAX_RAN_DIFF = 1.0  # deg
+    MAX_INC_DIFF = 1.0 * np.pi / 180.0  # deg
+    MAX_PAR_DIFF = 10.0 * np.pi / 180.0  # deg
+    MAX_RAN_DIFF = 1.0 * np.pi / 180.0  # deg
 
     def __init__(self):
         pass
@@ -54,6 +54,22 @@ class RewardUtils:
             reward -= 0.2
 
         return reward
+
+    def compute_reward_for_orbit_return(self, current_kepl_elem: np.array, initial_kepl_elem: np.array):
+        local_reward = 0
+        a_d, e_d, i_d, pa_d, ra_d, _ = current_kepl_elem - initial_kepl_elem
+        if abs(a_d) > self.MAX_SMA_DIFF:
+            local_reward -= 0.2
+        if abs(e_d) > self.MAX_ECC_DIFF:
+            local_reward -= 0.2
+        if abs(i_d) > self.MAX_INC_DIFF:
+            local_reward -= 0.2
+        if abs(pa_d) > self.MAX_PAR_DIFF:
+            local_reward -= 0.2
+        if abs(ra_d) > self.MAX_RAN_DIFF:
+            local_reward -= 0.2
+
+        return local_reward
 
     @staticmethod
     def compute_sequence_of_distances_between_state_seq(primary_sc_state_seq: np.array,
