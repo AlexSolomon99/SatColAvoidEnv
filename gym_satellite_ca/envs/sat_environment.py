@@ -136,6 +136,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self._hist_primary_states = []
         self._hist_kepl_elements = []
         self._hist_primary_at_collision_states = []
+        self._hist_min_coll_dist = []
         self._time_step_idx = 0
 
         # instantiate conditions checkers
@@ -172,22 +173,19 @@ class CollisionAvoidanceEnv(gym.Env):
 
     def get_final_info(self):
         return {
-            "primary_init_sequence": self.initial_primary_sc_state_sequence,
-            "init_kepl_elements": self.propag_utils.get_kepl_elements_from_kepl_orb(
-                kepl_orbit=self.primary_init_kepl_orbit),
-            "secondary_init_sequence": self.secondary_sc_state_sequence,
+            "init_kepl_elements": self.primary_initial_kepl_elements,
             "historical_actions": self.hist_actions,
             "historical_primary_sequence": self.hist_primary_states,
             "hist_primary_at_collision_states": self.hist_primary_at_collision_states,
-            "hist_kepl_elements": self.hist_kepl_elements,
+            "min_collision_distances": self.hist_min_coll_dist,
             "collision_distance": self.COLLISION_MIN_DISTANCE,
             "initial_orbit_radius_bound": self.INITIAL_ORBIT_RADIUS_BOUND,
             "max_altitude_diff_allowed": self.MAX_ALTITUDE_DIFF_ALLOWED,
             "time_step_idx": self.time_step_idx,
             "collision_avoided": self.collision_avoided,
             "returned_to_init_orbit": self.returned_to_init_orbit,
-            "drifted_out_of_bounds": self.drifted_out_of_bounds,
-            "fuel_used_perc": self.fuel_used_perc
+            "fuel_used_perc": self.fuel_used_perc,
+            "collision_idx": int(len(self.time_discretisation_primary) // 2)
         }
 
     def _get_info(self):
@@ -232,6 +230,12 @@ class CollisionAvoidanceEnv(gym.Env):
         collision_reward_contrib = - max(
             (self.COLLISION_MIN_DISTANCE - self.min_collision_diff) / self.COLLISION_MIN_DISTANCE, 0)
 
+        # check if the collision has been avoided
+        current_absolute_time = self.time_discretisation_primary[self.time_step_idx]
+        if current_absolute_time in self.time_discretisation_secondary:
+            if collision_reward_contrib < 0:
+                self.collision_avoided = False
+
         # get the negative reward for not returning to the initial orbit by the end of the event
         return_init_orbit_contrib = 0
         if self.time_step_idx >= self.time_step_idx_last_orbit:
@@ -241,6 +245,7 @@ class CollisionAvoidanceEnv(gym.Env):
 
             if return_init_orbit_contrib == 0:
                 self.truncated = True
+                self.returned_to_init_orbit = True
                 return 1.0
 
         # get the negative reward for using fuel
@@ -317,14 +322,14 @@ class CollisionAvoidanceEnv(gym.Env):
         # add to the historical recordings
         self.hist_actions.append(action)
         self.hist_primary_states.append(copy.deepcopy(self.primary_current_pv))
-        self.hist_kepl_elements.append(copy.deepcopy(self.primary_current_pv))
+        self.hist_min_coll_dist.append(self.min_collision_diff)
+
+        # compute the reward
+        reward = self._get_reward()
 
         # set the observation and the additional information
         observation = self._get_obs()
         info = self._get_info()
-
-        # compute the reward
-        reward = self._get_reward()
 
         # check if the current state indicates the termination of the episode
         terminated = self._is_done()
@@ -337,6 +342,11 @@ class CollisionAvoidanceEnv(gym.Env):
         if options is None:
             options = DEFAULT_RESET_OPTIONS
         super().reset(seed=seed)
+
+        # reset the info states
+        self.truncated = False
+        self.returned_to_init_orbit = False
+        self.collision_avoided = True
 
         # reset the reference time and the position of the satellite in the orbit
         self.satellite.set_random_tran()
@@ -431,7 +441,6 @@ class CollisionAvoidanceEnv(gym.Env):
         # reset the records
         self.hist_actions = []
         self.hist_primary_states = [self.primary_current_pv]
-        self.hist_kepl_elements = [self.propag_utils.get_kepl_elem_from_state(sc_state=self.primary_current_state)]
         self.hist_primary_at_collision_states = []
         self.time_step_idx = 0
 
@@ -741,6 +750,14 @@ class CollisionAvoidanceEnv(gym.Env):
     @hist_primary_at_collision_states.setter
     def hist_primary_at_collision_states(self, x):
         self._hist_primary_at_collision_states = x
+
+    @property
+    def hist_min_coll_dist(self):
+        return self._hist_min_coll_dist
+
+    @hist_min_coll_dist.setter
+    def hist_min_coll_dist(self, x):
+        self._hist_min_coll_dist = x
 
     @property
     def time_step_idx(self):
