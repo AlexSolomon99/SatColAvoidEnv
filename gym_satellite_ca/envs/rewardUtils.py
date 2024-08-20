@@ -15,18 +15,30 @@ class RewardUtils:
     FUEL_USED_NORM_TERM = 10000.0
 
     # Orbital differences allowed between the initial orbit and final orbit
-    MAX_SMA_DIFF = 200.0  # meters
-    MAX_ECC_DIFF = 0.001
-    MAX_INC_DIFF = 1.0 * np.pi / 180.0  # deg
-    MAX_PAR_DIFF = 10.0 * np.pi / 180.0  # deg
-    MAX_RAN_DIFF = 1.0 * np.pi / 180.0  # deg
+    # MAX_SMA_DIFF = 200.0  # meters
+    # MAX_ECC_DIFF = 0.001
+    # MAX_INC_DIFF = 1.0 * np.pi / 180.0  # rad
+    # MAX_PAR_DIFF = 10.0 * np.pi / 180.0  # rad
+    # MAX_RAN_DIFF = 1.0 * np.pi / 180.0  # rad
+    # try some extreme values
+    MAX_SMA_DIFF = 10.0  # meters
+    MAX_ECC_DIFF = 1e-8
+    MAX_INC_DIFF = 1e-8
+    MAX_PAR_DIFF = 10.0 * np.pi / 180.0  # rad
+    MAX_RAN_DIFF = 1e-8
 
     # reward weights
-    wa = 1e-5
-    we = 20
-    wi = 15
-    wpa = 10
-    wran = 15
+    # wa = 1e-5
+    # we = 20
+    # wi = 15
+    # wpa = 10
+    # wran = 15
+    # extreme reward weights
+    wa = 2 * 1e-3
+    we = 1e-2
+    wi = 1e-2
+    wpa = 0.1
+    wran = 1e-3
 
     def __init__(self):
         pass
@@ -66,15 +78,15 @@ class RewardUtils:
         local_reward = 0
         a_d, e_d, i_d, pa_d, ra_d, _ = current_kepl_elem - initial_kepl_elem
         if abs(a_d) > self.MAX_SMA_DIFF:
-            local_reward -= 0.2
+            local_reward -= self.wa * abs(a_d)
         if abs(e_d) > self.MAX_ECC_DIFF:
-            local_reward -= 0.2
+            local_reward -= self.we * abs(e_d)
         if abs(i_d) > self.MAX_INC_DIFF:
-            local_reward -= 0.2
+            local_reward -= self.wi * abs(i_d)
         if abs(pa_d) > self.MAX_PAR_DIFF:
-            local_reward -= 0.2
+            local_reward -= self.wpa * abs(pa_d)
         if abs(ra_d) > self.MAX_RAN_DIFF:
-            local_reward -= 0.2
+            local_reward -= self.wran * abs(ra_d)
 
         return local_reward
 
