@@ -3,6 +3,42 @@ import math
 import random
 
 
+def generate_random_sat_class(sma_min, sma_max, ecc_min, ecc_max, inc_min, inc_max,
+                              argp_min, argp_max, raan_min, raan_max, tran_min, tran_max,
+                              angle_type="DEGREE", mass_min=100, mass_max=100,
+                              area_min=1.0, area_max=1.0,
+                              reflection_idx_min=2.0, reflection_idx_max=2.0,
+                              thruster_max_force_min=0.0001, thruster_max_force_max=0.0001,
+                              thruster_isp_min=4000.0, thruster_isp_max=4000,
+                              seed=None):
+    if seed is not None:
+        random.seed(seed)
+
+    # set the keplerian elements
+    sma = random.uniform(sma_min, sma_max)
+    ecc = random.uniform(ecc_min, ecc_max)
+    inc = random.uniform(inc_min, inc_max)
+    argp = random.uniform(argp_min, argp_max)
+    raan = random.uniform(raan_min, raan_max)
+    tran = random.uniform(tran_min, tran_max)
+
+    # set the other characteristics of the satellite
+    mass = random.uniform(mass_min, mass_max)
+    area = random.uniform(area_min, area_max)
+    reflection_idx = random.uniform(reflection_idx_min, reflection_idx_max)
+    thruster_max_force = random.uniform(thruster_max_force_min, thruster_max_force_max)
+    thruster_isp = random.uniform(thruster_isp_min, thruster_isp_max)
+
+    sat_obj = SatelliteData(sma=sma, ecc=ecc, inc=inc, argp=argp, raan=raan, tran=tran,
+                            angle_type=angle_type, mass=mass,
+                            area=area, reflection_idx=reflection_idx, thruster_max_force=thruster_max_force,
+                            thruster_isp=thruster_isp)
+
+    sat_obj.change_angles_to_radians()
+
+    return sat_obj
+
+
 class SatelliteData:
     """ Class that describes the properties and attributes of the specific data of a satellite """
 
