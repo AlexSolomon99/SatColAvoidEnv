@@ -103,3 +103,7 @@ class RewardUtils:
     def compute_dist_between_states(primary_sc_state: np.array,
                                     secondary_sc_state: np.array) -> float:
         return np.linalg.norm(primary_sc_state - secondary_sc_state)
+
+    @staticmethod
+    def min_max_norm(x, min_x, max_x):
+        return (x - min_x)/(max_x - min_x)

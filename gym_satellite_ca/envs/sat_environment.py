@@ -34,7 +34,8 @@ DEFAULT_REF_TIME = AbsoluteDate(2023, 6, 16, 0, 0, 0.0, UTC)
 DEFAULT_REF_FRAME = FramesFactory.getEME2000()
 LOCAL_ORBITAL_FRAME = LOFType.LVLH_CCSDS
 DEFAULT_RESET_OPTIONS = {
-    "propagator": "numerical"
+    "propagator": "numerical",
+    "generate_sat": False
 }
 
 
@@ -123,6 +124,7 @@ class CollisionAvoidanceEnv(gym.Env):
                                             high=np.inf,
                                             shape=(9,),
                                             dtype=np.float64)
+        self.normalise_observations = False
 
         # instantiate the components of the observation space
         self._primary_current_pv = None
@@ -130,6 +132,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self._secondary_sc_state_sequence = None
         self._tca_time_lapse = None
         self._satellite_mass = None
+        self.initial_time_lapse = 0.0
 
         # instantiate the historical recordings
         self._hist_actions = []
@@ -152,15 +155,31 @@ class CollisionAvoidanceEnv(gym.Env):
         self.close()
 
     def _get_obs(self):
-        data_dict = {"primary_current_pv": self.primary_current_pv,
-                     "min_collision_diff": np.array([self.min_collision_diff]),
-                     "tca_time_lapse": np.array([self.tca_time_lapse]),
-                     "primary_sc_mass": np.array([self.satellite_mass])
-                     }
+        if self.normalise_observations:
+            data_dict = self.normalise_obs()
+        else:
+            data_dict = {"primary_current_pv": self.primary_current_pv,
+                         "min_collision_diff": np.array([self.min_collision_diff]),
+                         "tca_time_lapse": np.array([self.tca_time_lapse]),
+                         "primary_sc_mass": np.array([self.satellite_mass])
+                         }
         observations = []
         for key in data_dict.keys():
             observations.extend(data_dict[key].tolist())
         return np.array(observations)
+
+    def normalise_obs(self):
+        norm_primary_current_pv = self.normalise_kepl_elements(kepl_elements=self.primary_current_pv)
+        norm_min_coll_dist = self.normalise_min_collision_distance(min_collision_distance=self.min_collision_diff)
+        norm_tca_time_lapse = self.normalise_tca_time_laps(tca_time_lapse=self.tca_time_lapse)
+        norm_satellite_mass = self.normalise_satellite_mass(satellite_mass=self.satellite_mass)
+        norm_obs_dict = {
+            "primary_current_pv": norm_primary_current_pv,
+            "min_collision_diff": norm_min_coll_dist,
+            "tca_time_lapse": norm_tca_time_lapse,
+            "primary_sc_mass": norm_satellite_mass
+        }
+        return norm_obs_dict
 
     def get_intermediary_info(self):
         return {
@@ -227,10 +246,10 @@ class CollisionAvoidanceEnv(gym.Env):
         # get the reward for avoiding the collision (punishment for not avoiding it)
         # check if the current state of the primary corresponds to a state in which the position of the secondary
         # satellite is known and compute the distance between the states
+        # check if the collision has been avoided
         collision_reward_contrib = - max(
             (self.COLLISION_MIN_DISTANCE - self.min_collision_diff) / self.COLLISION_MIN_DISTANCE, 0)
 
-        # check if the collision has been avoided
         current_absolute_time = self.time_discretisation_primary[self.time_step_idx]
         if current_absolute_time in self.time_discretisation_secondary:
             if collision_reward_contrib < 0:
@@ -277,10 +296,11 @@ class CollisionAvoidanceEnv(gym.Env):
         current_time = self.absolute_time_discretisation_primary[self.time_step_idx]
         self.time_step_idx += 1
         new_time = self.absolute_time_discretisation_primary[self.time_step_idx]
+        mass_before_action = self.primary_current_state.getMass()
 
         # Assume there are 3 pairs of thrusters, each of them can be used independently
         for i in range(3):
-            if abs(action[i]) > 0.0:
+            if abs(action[i]) > 0.3:
                 direction = Vector3D(list((1.0 if action[i] > 0 else -1.0) if i == j else 0.0 for j in range(3)))
                 force = self.satellite.thruster_max_force * abs(action[i])
                 manoeuvre = ConstantThrustManeuver(current_time, self.PROPAGATION_TIME_STEP,
@@ -314,6 +334,9 @@ class CollisionAvoidanceEnv(gym.Env):
             self.collision_diffs = [self.COLLISION_MIN_DISTANCE + 1]
 
         # set the observations from this step
+        mass_after_action = self.primary_current_state.getMass()
+        self.fuel_used_perc = (mass_before_action - mass_after_action) * 1e6
+
         self.primary_current_pv = copy.deepcopy(self.propag_utils.get_kepl_elem_from_state(self.primary_current_state))
         self.min_collision_diff = min(self.collision_diffs)
         self.satellite_mass = self.primary_current_state.getMass()
@@ -343,10 +366,21 @@ class CollisionAvoidanceEnv(gym.Env):
             options = DEFAULT_RESET_OPTIONS
         super().reset(seed=seed)
 
+        # regenerate satellite object if required
+        if options["generate_sat"]:
+            # generate satellite object
+            self.satellite = satDataClass.generate_random_sat_class(sma_min=6785000.0, sma_max=6850000.0,
+                                                                    ecc_min=0.01, ecc_max=0.2,
+                                                                    inc_min=20, inc_max=40,
+                                                                    argp_min=-180, argp_max=180,
+                                                                    raan_min=-180, raan_max=180,
+                                                                    tran_min=-180, tran_max=180)
+
         # reset the info states
         self.truncated = False
         self.returned_to_init_orbit = False
         self.collision_avoided = True
+        self.fuel_used_perc = 0.0
 
         # reset the reference time and the position of the satellite in the orbit
         self.satellite.set_random_tran()
@@ -443,6 +477,7 @@ class CollisionAvoidanceEnv(gym.Env):
         self.hist_primary_states = [self.primary_current_pv]
         self.hist_primary_at_collision_states = []
         self.time_step_idx = 0
+        self.initial_time_lapse = self.ref_time.offsetFrom(self.absolute_time_discretisation_primary[0], UTC)
 
         # get the orbital period and the indexes in the time discretisation corresponding to it
         orbital_period = self.primary_initial_orbit.getKeplerianPeriod()
@@ -510,6 +545,45 @@ class CollisionAvoidanceEnv(gym.Env):
             self.time_discretisation_primary)
         self.absolute_time_discretisation_secondary = self.propag_utils.get_absolute_time_discretisation(
             self.time_discretisation_secondary)
+
+    def normalise_kepl_elements(self, kepl_elements):
+        sma, ecc, inc, par, ran, tan = copy.deepcopy(kepl_elements)
+        init_sma, init_ecc, init_inc, init_par, init_ran, init_tan = copy.deepcopy(self.primary_initial_kepl_elements)
+        sma_norm = self.reward_utils.min_max_norm(x=sma,
+                                                  min_x=init_sma - 300,
+                                                  max_x=init_sma + 300)
+        ecc_norm = self.reward_utils.min_max_norm(x=ecc,
+                                                  min_x=init_ecc - 1e-4,
+                                                  max_x=init_ecc + 1e-4)
+        inc_norm = self.reward_utils.min_max_norm(x=inc,
+                                                  min_x=init_inc - 1e-5,
+                                                  max_x=init_inc + 1e-5)
+        par_norm = self.reward_utils.min_max_norm(x=par,
+                                                  min_x=init_par - 1e-5,
+                                                  max_x=init_par + 1e-5)
+        ran_norm = self.reward_utils.min_max_norm(x=ran,
+                                                  min_x=init_ran - 1e-5,
+                                                  max_x=init_ran + 1e-5)
+        tan_norm = self.reward_utils.min_max_norm(x=tan,
+                                                  min_x=-np.pi,
+                                                  max_x=np.pi)
+        return np.array([sma_norm, ecc_norm, inc_norm, par_norm, ran_norm, tan_norm])
+
+    def normalise_min_collision_distance(self, min_collision_distance):
+        # the formula was tested empirically to bring the values between -1 and 1
+        return np.array([np.log(min_collision_distance + 1.0 / self.COLLISION_MIN_DISTANCE) / 5.0])
+
+    def normalise_tca_time_laps(self, tca_time_lapse):
+        return np.array([tca_time_lapse/self.initial_time_lapse])
+
+    def normalise_satellite_mass(self, satellite_mass):
+        # the minimum mass is obtained by running a full episode with all the engines running at all times
+        # this should be recalculated if the thrust value or thrust isp change
+        satellite_mass_norm = self.reward_utils.min_max_norm(x=satellite_mass,
+                                                             min_x=99.99471837987426,
+                                                             max_x=self.primary_initial_state.getMass())
+        return np.array([satellite_mass_norm])
+
 
     @property
     def satellite(self):
