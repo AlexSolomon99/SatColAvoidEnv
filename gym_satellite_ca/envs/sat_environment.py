@@ -189,7 +189,8 @@ class CollisionAvoidanceEnv(gym.Env):
             "collision_avoided": self.collision_avoided,
             "returned_to_init_orbit": self.returned_to_init_orbit,
             "drifted_out_of_bounds": self.drifted_out_of_bounds,
-            "fuel_used_perc": self.fuel_used_perc
+            "fuel_used_perc": self.fuel_used_perc,
+            "collision_idx": len(self.time_discretisation_primary)//2
         }
 
     def _get_info(self):
