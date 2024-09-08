@@ -34,11 +34,11 @@ class RewardUtils:
     # wpa = 10
     # wran = 15
     # extreme reward weights
-    wa = 2 * 1e-3
-    we = 1e-2
-    wi = 1e-2
-    wpa = 0.1
-    wran = 1e-3
+    wa = 1e-2
+    we = 2 * 1e5
+    wi = 2 * 1e4
+    wpa = 2 * 1e4
+    wran = 2 * 1e4
 
     def __init__(self):
         pass
@@ -77,16 +77,18 @@ class RewardUtils:
     def compute_reward_for_orbit_return(self, current_kepl_elem: np.array, initial_kepl_elem: np.array):
         local_reward = 0
         a_d, e_d, i_d, pa_d, ra_d, _ = current_kepl_elem - initial_kepl_elem
+        pa_d = min(abs(current_kepl_elem[3] - initial_kepl_elem[3]),
+                   abs(2 * np.pi - abs(current_kepl_elem[3] - initial_kepl_elem[3])))
         if abs(a_d) > self.MAX_SMA_DIFF:
-            local_reward -= self.wa * abs(a_d)
+            local_reward -= min(self.wa * abs(a_d), 0.3)
         if abs(e_d) > self.MAX_ECC_DIFF:
-            local_reward -= self.we * abs(e_d)
+            local_reward -= min(self.we * abs(e_d), 0.3)
         if abs(i_d) > self.MAX_INC_DIFF:
-            local_reward -= self.wi * abs(i_d)
+            local_reward -= min(self.wi * abs(i_d), 0.3)
         if abs(pa_d) > self.MAX_PAR_DIFF:
-            local_reward -= self.wpa * abs(pa_d)
+            local_reward -= min(self.wpa * abs(pa_d), 0.2)
         if abs(ra_d) > self.MAX_RAN_DIFF:
-            local_reward -= self.wran * abs(ra_d)
+            local_reward -= min(self.wran * abs(ra_d), 0.2)
 
         return local_reward
 

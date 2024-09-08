@@ -124,7 +124,7 @@ class CollisionAvoidanceEnv(gym.Env):
                                             high=np.inf,
                                             shape=(9,),
                                             dtype=np.float64)
-        self.normalise_observations = False
+        self.normalise_observations = True
 
         # instantiate the components of the observation space
         self._primary_current_pv = None
@@ -147,6 +147,10 @@ class CollisionAvoidanceEnv(gym.Env):
         self._returned_to_init_orbit = True
         self._drifted_out_of_bounds = False
         self._fuel_used_perc = 0.0
+
+        self.reward_contrib_ca = []
+        self.reward_contrib_ret = []
+        self.reward_contrib_fuel = []
 
         # set up some environment variables
         self._truncated = False
@@ -204,7 +208,10 @@ class CollisionAvoidanceEnv(gym.Env):
             "collision_avoided": self.collision_avoided,
             "returned_to_init_orbit": self.returned_to_init_orbit,
             "fuel_used_perc": self.fuel_used_perc,
-            "collision_idx": int(len(self.time_discretisation_primary) // 2)
+            "collision_idx": int(len(self.time_discretisation_primary) // 2),
+            "reward_contrib_ca": self.reward_contrib_ca,
+            "reward_contrib_ret": self.reward_contrib_ret,
+            "reward_contrib_fuel": self.reward_contrib_fuel
         }
 
     def _get_info(self):
@@ -271,10 +278,13 @@ class CollisionAvoidanceEnv(gym.Env):
         fuel_used_perc = ((self.primary_initial_state.getMass() - self.satellite_mass) /
                           self.primary_initial_state.getMass())
         self.fuel_used_perc = fuel_used_perc
-        fuel_usage_contrib = - self.reward_utils.FUEL_USED_NORM_TERM * fuel_used_perc
+        fuel_usage_contrib = - min(self.reward_utils.FUEL_USED_NORM_TERM * fuel_used_perc, 0.2)
 
         # compute the overall reward
         reward_ = collision_reward_contrib + return_init_orbit_contrib + fuel_usage_contrib
+        self.reward_contrib_ca.append(collision_reward_contrib)
+        self.reward_contrib_ret.append(return_init_orbit_contrib)
+        self.reward_contrib_fuel.append(fuel_usage_contrib)
 
         return reward_
 
@@ -297,6 +307,9 @@ class CollisionAvoidanceEnv(gym.Env):
         self.time_step_idx += 1
         new_time = self.absolute_time_discretisation_primary[self.time_step_idx]
         mass_before_action = self.primary_current_state.getMass()
+
+        # get the actions
+        action = [x if abs(x) > 0.3 else 0.0 for x in action]
 
         # Assume there are 3 pairs of thrusters, each of them can be used independently
         for i in range(3):
@@ -381,6 +394,9 @@ class CollisionAvoidanceEnv(gym.Env):
         self.returned_to_init_orbit = False
         self.collision_avoided = True
         self.fuel_used_perc = 0.0
+        self.reward_contrib_ca = []
+        self.reward_contrib_ret = []
+        self.reward_contrib_fuel = []
 
         # reset the reference time and the position of the satellite in the orbit
         self.satellite.set_random_tran()
