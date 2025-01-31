@@ -21,14 +21,15 @@ from org.orekit.frames import FramesFactory, LOFType
 from org.orekit.propagation.numerical import NumericalPropagator
 from orekit.pyhelpers import download_orekit_data_curdir, setup_orekit_curdir
 
-from gym_satellite_ca.envs import satDataClass
-from gym_satellite_ca.envs import propagUtils
-from gym_satellite_ca.envs import rewardUtils
+from gym_satellite_ca.envs import sat_data_class
+from gym_satellite_ca.envs import propag_utils
+from gym_satellite_ca.envs import reward_utils
 
+# Orekit setup
 download_orekit_data_curdir()
 setup_orekit_curdir()
 
-# set up default parameters for the environment
+# Set up default parameters for the environment
 UTC = TimeScalesFactory.getUTC()
 DEFAULT_REF_TIME = AbsoluteDate(2023, 6, 16, 0, 0, 0.0, UTC)
 DEFAULT_REF_FRAME = FramesFactory.getEME2000()
@@ -40,10 +41,27 @@ DEFAULT_RESET_OPTIONS = {
 
 
 class CollisionAvoidanceEnv(gym.Env):
-    metadata = {"render_modes": [None]}
+    """
+    Class created for describing the collision avoidance environment. This environment models the Low-Earth Orbit
+    region, in which a PRIMARY satellite is about to collide with a SECONDARY satellite (piece of debris).
 
+    RESET: The event is created by first selecting a random position in the orbit of the PRIMARY object. The position
+    of the SECONDARY satellite is created in the vicinity of the PRIMARY's position, ensuring collision. From these
+    collision positions, both satellites are propagated backwards, to the starting position. This is the initial state,
+    the beginning of an episode. Check the "reset" method.
+
+    STEP: At every time step, an action is required. This action represents the thrust created by the PRIMARY satellite
+    for the entire duration of the current time step. The thrust is applied to the satellite and its new position
+    (or new orbit) is computed. A reward is computed basen on the action taken and the newly achieved state.
+    Check the "step" method.
+
+    STATE: The state of the environment is obtained from the "_get_obs" method.
+
+    REWARD: The reward is computed in the "_get_reward" method.
+    """
     # Constants Definition
     # Propagation time constants
+    # ("PRIMARY" is the satellite which is controlled by the agent. "SECONDARY" refers to the piece of debris)
     PRIMARY_ORBIT_PROPAGATION_PERIOD = 4.0  # days
     SECONDARY_ORBIT_PROPAGATION_PERIOD = 40.0  # minutes
     PROPAGATION_TIME_STEP = 60.0 * 10  # seconds
@@ -56,23 +74,37 @@ class CollisionAvoidanceEnv(gym.Env):
     SECONDARY_SC_AREA = 1.0  # m^2
     SECONDARY_REFLECTION_IDX = 2.0
 
-    # Orbit constraints
-    MAX_ALTITUDE_DIFF_ALLOWED = 5000.0  # meters
-    MIN_ORBIT_DISTANCE_TO_EARTH = 6500000.0  # meters
-    MAX_ORBIT_DISTANCE_TO_EARTH = 8000000.0  # meters
-    # INITIAL_ORBIT_RADIUS_BOUND - the max distance allowed between the satellite in the final
-    # orbit and the same satellite in the initial orbit such that the final orbit can be considered equivalent to the
-    # initial one
-    INITIAL_ORBIT_RADIUS_BOUND = 300.0  # meters
-
     # Collision constants
     COLLISION_MIN_DISTANCE = 2000.0  # meters
+
+    # No rendering option is used
+    metadata = {"render_modes": [None]}
 
     def __init__(self,
                  satellite: satDataClass.SatelliteData,
                  ref_time: AbsoluteDate = DEFAULT_REF_TIME,
                  ref_frame: Frame = DEFAULT_REF_FRAME, use_perturbations: bool = False,
                  earth_degree: int = 16, earth_order: int = 16):
+        """
+        Constructor method for the environment. Instantiates the action space, the observation space, historical
+        recordings.
+        :param satellite: Object of the satDataClass.SatelliteData class. It contains information about the
+        characteristics of the PRIMARY satellite
+        :type satellite: sat_data_class.SatelliteData
+        :param ref_time: The time epoch at which the Keplerian Orbit of the PRIMARY satellite is initialised.
+        :type: ref_time: org.orekit.time.AbsoluteDate
+        :param ref_frame: The reference frame in which the orbit information is expressed.
+        :type ref_frame: org.orekit.frames.Frame
+        :param use_perturbations: Flag indicating whether the orbit propagation process takes into account special
+        perturbations (such as the influence of the solar radiation pressure or third bodies like the Moon, Sun).
+        :type use_perturbations: bool
+        :param earth_degree: Parameter taken into account in computing the Earth's gravity field (only taken into
+        account if "use_perturbations" is True)
+        :type earth_degree: int
+        :param earth_order: Parameter taken into account in computing the Earth's gravity field (only taken into
+        account if "use_perturbations" is True)
+        :type earth_order: int
+        """
         super(gym.Env, self).__init__()
         self._satellite = satellite
         self._ref_time = ref_time
@@ -202,8 +234,6 @@ class CollisionAvoidanceEnv(gym.Env):
             "hist_primary_at_collision_states": self.hist_primary_at_collision_states,
             "min_collision_distances": self.hist_min_coll_dist,
             "collision_distance": self.COLLISION_MIN_DISTANCE,
-            "initial_orbit_radius_bound": self.INITIAL_ORBIT_RADIUS_BOUND,
-            "max_altitude_diff_allowed": self.MAX_ALTITUDE_DIFF_ALLOWED,
             "time_step_idx": self.time_step_idx,
             "collision_avoided": self.collision_avoided,
             "returned_to_init_orbit": self.returned_to_init_orbit,
