@@ -1,4 +1,4 @@
-from gym_satellite_ca.envs.satDataClass import SatelliteData
+from gym_satellite_ca.envs.sat_data_class import SatelliteData
 
 
 def get_sat_data_default_config():

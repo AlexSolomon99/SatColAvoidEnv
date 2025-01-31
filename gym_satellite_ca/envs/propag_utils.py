@@ -24,7 +24,7 @@ from org.orekit.orbits import PositionAngleType
 import numpy as np
 import copy
 
-from gym_satellite_ca.envs import satDataClass
+from gym_satellite_ca.envs import sat_data_class
 
 
 class PropagationUtilities:
