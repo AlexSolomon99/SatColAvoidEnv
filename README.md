@@ -4,6 +4,10 @@ Installation
 ------------------
 You can follow the directions in the .travis.yml file, which describes the necessary steps to install this package and all its dependencies in a clean Anaconda environment.
 
+Alternatively, if you only need to use the environment, you can install it using pip:
+
+**Environment installation**: pip install -i https://test.pypi.org/simple/ gym-satellite-ca==0.2.0
+
 Citing Us
 ------------------
 
