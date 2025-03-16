@@ -68,9 +68,6 @@ class CollisionAvoidanceEnv(gym.Env):
 
     REWARD: The reward is computed in the "_get_reward" method.
     """
-    # Constants Definition
-    ACTION_SPACE = [-1, 0, 1]
-
     # Propagation time constants
     # ("PRIMARY" is the satellite which is controlled by the agent. "SECONDARY" refers to the piece of debris)
     PRIMARY_ORBIT_PROPAGATION_PERIOD = 4.0  # days
@@ -159,8 +156,9 @@ class CollisionAvoidanceEnv(gym.Env):
         self._secondary_propagator = None
 
         # set the action space
-        self.action_space = spaces.Discrete(len(self.ACTION_SPACE) ** 3)
-        self.full_action_space = self.get_full_action_space()
+        self.action_space = spaces.Box(low=-1.0,
+                                       high=1.0,
+                                       shape=(3,), dtype=np.float64)
 
         # set the observation space
         self.observation_space = spaces.Box(low=-np.inf,
@@ -335,9 +333,6 @@ class CollisionAvoidanceEnv(gym.Env):
         return self.truncated
 
     def step(self, action):
-        # get the action in the format required by the environment
-        action = self.full_action_space[action]
-
         # The force in each direction cannot be greater than the maximum force of the thruster
         for action_idx in range(len(action)):
             if action[action_idx] <= 0:
@@ -604,19 +599,6 @@ class CollisionAvoidanceEnv(gym.Env):
             self.time_discretisation_primary)
         self.absolute_time_discretisation_secondary = self.propag_utils.get_absolute_time_discretisation(
             self.time_discretisation_secondary)
-
-    def get_full_action_space(self):
-        all_actions = []
-
-        for elem_1 in self.ACTION_SPACE:
-            action_1 = [elem_1]
-            for elem_2 in self.ACTION_SPACE:
-                action_2 = action_1 + [elem_2]
-                for elem_3 in self.ACTION_SPACE:
-                    current_action = action_2 + [elem_3]
-                    all_actions.append(current_action)
-
-        return all_actions
 
     def normalise_kepl_elements(self, kepl_elements):
         sma, ecc, inc, par, ran, tan = copy.deepcopy(kepl_elements)
