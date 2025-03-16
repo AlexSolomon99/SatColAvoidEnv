@@ -1,3 +1,12 @@
+########################################################################################################################
+
+# Environment created for collision avoidance training of RL agents. This environment models the Low-Earth Orbit
+# region, in which a PRIMARY satellite is about to collide with a SECONDARY satellite (piece of debris).
+
+# Author: Alexandru Solomon | alexandru.solomon9999@gmail.com
+
+########################################################################################################################
+
 import copy
 
 import gymnasium as gym
@@ -60,6 +69,8 @@ class CollisionAvoidanceEnv(gym.Env):
     REWARD: The reward is computed in the "_get_reward" method.
     """
     # Constants Definition
+    ACTION_SPACE = [-1, 0, 1]
+
     # Propagation time constants
     # ("PRIMARY" is the satellite which is controlled by the agent. "SECONDARY" refers to the piece of debris)
     PRIMARY_ORBIT_PROPAGATION_PERIOD = 4.0  # days
@@ -75,13 +86,14 @@ class CollisionAvoidanceEnv(gym.Env):
     SECONDARY_REFLECTION_IDX = 2.0
 
     # Collision constants
+    # The minimum distance between the PRIMARY and SECONDARY objects such that the collision is avoided.
     COLLISION_MIN_DISTANCE = 2000.0  # meters
 
     # No rendering option is used
     metadata = {"render_modes": [None]}
 
     def __init__(self,
-                 satellite: satDataClass.SatelliteData,
+                 satellite: sat_data_class.SatelliteData,
                  ref_time: AbsoluteDate = DEFAULT_REF_TIME,
                  ref_frame: Frame = DEFAULT_REF_FRAME, use_perturbations: bool = False,
                  earth_degree: int = 16, earth_order: int = 16):
@@ -114,10 +126,10 @@ class CollisionAvoidanceEnv(gym.Env):
         self._earth_order = earth_order
 
         # instantiate the propagation and reward utilities classes
-        self._propag_utils = propagUtils.PropagationUtilities(satellite=satellite,
-                                                              ref_time=ref_time,
-                                                              ref_frame=ref_frame)
-        self._reward_utils = rewardUtils.RewardUtils()
+        self._propag_utils = propag_utils.PropagationUtilities(satellite=satellite,
+                                                               ref_time=ref_time,
+                                                               ref_frame=ref_frame)
+        self._reward_utils = reward_utils.RewardUtils()
 
         # initialise the initial orbits and states for the primary and secondary satellites
         self._primary_init_kepl_orbit = None
@@ -147,16 +159,15 @@ class CollisionAvoidanceEnv(gym.Env):
         self._secondary_propagator = None
 
         # set the action space
-        self.action_space = spaces.Box(low=-1.0,
-                                       high=1.0,
-                                       shape=(3,), dtype=np.float64)
+        self.action_space = spaces.Discrete(len(self.ACTION_SPACE) ** 3)
+        self.full_action_space = self.get_full_action_space()
 
         # set the observation space
         self.observation_space = spaces.Box(low=-np.inf,
                                             high=np.inf,
                                             shape=(9,),
                                             dtype=np.float64)
-        self.normalise_observations = True
+        self.normalise_observations = False
 
         # instantiate the components of the observation space
         self._primary_current_pv = None
@@ -251,48 +262,45 @@ class CollisionAvoidanceEnv(gym.Env):
 
     def _get_reward(self) -> float:
         """
-        Method used to compute the reward of the agent at the end of the episode.
+        Method used to compute the reward of the agent during the episode.
 
         The purpose of the agent, which manoeuvers the primary satellite, is to satisfy the following conditions:
 
-            1.   Increase the minimum distance between the primary satellite and the secondary satellite above a set
-            threshold, for the entire period of intersection between the 2.
+            1.   Increase the minimum distance between the PRIMARY satellite and the SECONDARY object above a set
+            threshold, for the entire period of intersection between the 2 objects.
 
-            2.   Keep the primary satellite as close as possible to the initial orbit for the duration of the episode.
-            The point is to keep the satellite operational for the most amount of time possible.
+            2.   Return the PRIMARY satellite to its initial orbit. The initial orbit, in this sense, is defined as the
+            first 5 Keplerian elements (without the true anomaly).
 
             3.   Use as less fuel as possible.
 
-            4.   Modify the orbit of the primary satellite without exceeding its "orbital boundaries". By this it is
-            referred to the necessity of the primary satellite to not exit Earth's orbit or crash into it. These are
-            high margins of error - some more restrictive margins are to be put in place.
-
-        Conditions 1. and 4. must be met in order for the agent to receive any positive reward. If the
-        collision occurs or the satellite crashes into Earth, the agent will only receive negative rewards and any other
-        reward obtained from meeting the other 2 conditions will be nullified. If conditions 1. and 4. are met, the
-        rewards from meeting conditions 2. and 3. can be taken into account.
-
-        Conditions 2. and 3. are soft conditions. It is not expected that the agent will keep the satellite on the
-        initial orbit for the entire duration of the episode or that it will not use fuel. Therefore, the more time
-        the satellite will keep the initial orbit and the less fuel it consumes, the higher the positive
-        reward obtained.
+            4.   Modify the orbit of the PRIMARY satellite without exceeding its "orbital boundaries". By this it is
+            referred to the necessity of the PRIMARY satellite to not exit Earth's orbit or crash into it. These are
+            high margins of error which, in all trials performed, were never exceeded.
 
         :return: A floating point number representing the reward the agent receives at the end of the episode.
         """
 
+        # I. Collision Avoidance
+
         # get the reward for avoiding the collision (punishment for not avoiding it)
-        # check if the current state of the primary corresponds to a state in which the position of the secondary
-        # satellite is known and compute the distance between the states
-        # check if the collision has been avoided
+        # "self.min_collision_diff" is an estimate of the minimum distance between the 2 Objects, computed regardless
+        # of the current time step. If the estimated miss distance is less than the threshold, then a punishment is
+        # given to the agent
         collision_reward_contrib = - max(
             (self.COLLISION_MIN_DISTANCE - self.min_collision_diff) / self.COLLISION_MIN_DISTANCE, 0)
 
+        # determine if the collision has been avoided - set the corresponding flag and save it
         current_absolute_time = self.time_discretisation_primary[self.time_step_idx]
         if current_absolute_time in self.time_discretisation_secondary:
             if collision_reward_contrib < 0:
                 self.collision_avoided = False
 
-        # get the negative reward for not returning to the initial orbit by the end of the event
+        # II. Return to the initial orbit
+
+        # get the negative reward for not returning to the initial orbit by the end of the event. If the satellite is
+        # returned to the initial orbit, then the total reward is set to +1 (the only instance when the reward value is
+        # positive). This is done to emphasise the importance of reaching this objective.
         return_init_orbit_contrib = 0
         if self.time_step_idx >= self.time_step_idx_last_orbit:
             return_init_orbit_contrib = self.reward_utils.compute_reward_for_orbit_return(
@@ -303,6 +311,8 @@ class CollisionAvoidanceEnv(gym.Env):
                 self.truncated = True
                 self.returned_to_init_orbit = True
                 return 1.0
+
+        # III. Fuel Usage
 
         # get the negative reward for using fuel
         fuel_used_perc = ((self.primary_initial_state.getMass() - self.satellite_mass) /
@@ -325,6 +335,9 @@ class CollisionAvoidanceEnv(gym.Env):
         return self.truncated
 
     def step(self, action):
+        # get the action in the format required by the environment
+        action = self.full_action_space[action]
+
         # The force in each direction cannot be greater than the maximum force of the thruster
         for action_idx in range(len(action)):
             if action[action_idx] <= 0:
@@ -338,17 +351,13 @@ class CollisionAvoidanceEnv(gym.Env):
         new_time = self.absolute_time_discretisation_primary[self.time_step_idx]
         mass_before_action = self.primary_current_state.getMass()
 
-        # get the actions
-        action = [x if abs(x) > 0.3 else 0.0 for x in action]
-
         # Assume there are 3 pairs of thrusters, each of them can be used independently
         for i in range(3):
-            if abs(action[i]) > 0.3:
-                direction = Vector3D(list((1.0 if action[i] > 0 else -1.0) if i == j else 0.0 for j in range(3)))
-                force = self.satellite.thruster_max_force * abs(action[i])
-                manoeuvre = ConstantThrustManeuver(current_time, self.PROPAGATION_TIME_STEP,
-                                                   force, self.satellite.thruster_isp, direction)
-                self.primary_propagator.addForceModel(manoeuvre)
+            direction = Vector3D(list((1.0 if action[i] > 0 else -1.0) if i == j else 0.0 for j in range(3)))
+            force = self.satellite.thruster_max_force * abs(action[i])
+            manoeuvre = ConstantThrustManeuver(current_time, self.PROPAGATION_TIME_STEP,
+                                               force, self.satellite.thruster_isp, direction)
+            self.primary_propagator.addForceModel(manoeuvre)
 
         # get the current state of the primary, at the new time
         self.primary_propagator.resetInitialState(self.primary_current_state)
@@ -356,7 +365,11 @@ class CollisionAvoidanceEnv(gym.Env):
                                                                   start_date=current_time,
                                                                   target_date=new_time)
 
-        # get the estimated collision differences
+        # get the estimated collision distance between the 2 objects
+        # the estimated collision distance is estimated only before the last epoch at which the position of the
+        # secondary is known. For future time steps, the estimated collision difference is set to a value above the
+        # threshold, such that the reward computed from avoiding the collision is 0 (zero). Basically, this ensures
+        # that the collision avoidance check is not performed after the collision passed.
         if new_time.offsetFrom(self.absolute_time_discretisation_secondary[-1], UTC) < 0:
             self.primary_keplerian_propagator.resetInitialState(self.primary_current_state)
             self.secondary_propagator.resetInitialState(self.secondary_initial_state)
@@ -376,7 +389,7 @@ class CollisionAvoidanceEnv(gym.Env):
         else:
             self.collision_diffs = [self.COLLISION_MIN_DISTANCE + 1]
 
-        # set the observations from this step
+        # compute the observations from this step
         mass_after_action = self.primary_current_state.getMass()
         self.fuel_used_perc = (mass_before_action - mass_after_action) * 1e6
 
@@ -412,12 +425,12 @@ class CollisionAvoidanceEnv(gym.Env):
         # regenerate satellite object if required
         if options["generate_sat"]:
             # generate satellite object
-            self.satellite = satDataClass.generate_random_sat_class(sma_min=6785000.0, sma_max=6850000.0,
-                                                                    ecc_min=0.01, ecc_max=0.2,
-                                                                    inc_min=20, inc_max=40,
-                                                                    argp_min=-180, argp_max=180,
-                                                                    raan_min=-180, raan_max=180,
-                                                                    tran_min=-180, tran_max=180)
+            self.satellite = sat_data_class.generate_random_sat_class(sma_min=6785000.0, sma_max=6850000.0,
+                                                                      ecc_min=0.01, ecc_max=0.2,
+                                                                      inc_min=20, inc_max=40,
+                                                                      argp_min=-180, argp_max=180,
+                                                                      raan_min=-180, raan_max=180,
+                                                                      tran_min=-180, tran_max=180)
 
         # reset the info states
         self.truncated = False
@@ -434,10 +447,10 @@ class CollisionAvoidanceEnv(gym.Env):
         self.ref_time = self.ref_time.shiftedBy(ref_time_offset_days * 24.0 * 3600.0)
 
         # re-instantiate the propagation and reward utilities classes
-        self.propag_utils = propagUtils.PropagationUtilities(satellite=self.satellite,
-                                                             ref_time=self.ref_time,
-                                                             ref_frame=self.ref_frame)
-        self.reward_utils = rewardUtils.RewardUtils()
+        self.propag_utils = propag_utils.PropagationUtilities(satellite=self.satellite,
+                                                              ref_time=self.ref_time,
+                                                              ref_frame=self.ref_frame)
+        self.reward_utils = reward_utils.RewardUtils()
 
         # reset the time discretisation variables
         self.set_time_discretisation_variables()
@@ -592,6 +605,19 @@ class CollisionAvoidanceEnv(gym.Env):
         self.absolute_time_discretisation_secondary = self.propag_utils.get_absolute_time_discretisation(
             self.time_discretisation_secondary)
 
+    def get_full_action_space(self):
+        all_actions = []
+
+        for elem_1 in self.ACTION_SPACE:
+            action_1 = [elem_1]
+            for elem_2 in self.ACTION_SPACE:
+                action_2 = action_1 + [elem_2]
+                for elem_3 in self.ACTION_SPACE:
+                    current_action = action_2 + [elem_3]
+                    all_actions.append(current_action)
+
+        return all_actions
+
     def normalise_kepl_elements(self, kepl_elements):
         sma, ecc, inc, par, ran, tan = copy.deepcopy(kepl_elements)
         init_sma, init_ecc, init_inc, init_par, init_ran, init_tan = copy.deepcopy(self.primary_initial_kepl_elements)
@@ -620,7 +646,7 @@ class CollisionAvoidanceEnv(gym.Env):
         return np.array([np.log(min_collision_distance + 1.0 / self.COLLISION_MIN_DISTANCE) / 5.0])
 
     def normalise_tca_time_laps(self, tca_time_lapse):
-        return np.array([tca_time_lapse/self.initial_time_lapse])
+        return np.array([tca_time_lapse / self.initial_time_lapse])
 
     def normalise_satellite_mass(self, satellite_mass):
         # the minimum mass is obtained by running a full episode with all the engines running at all times
@@ -629,7 +655,6 @@ class CollisionAvoidanceEnv(gym.Env):
                                                              min_x=99.99471837987426,
                                                              max_x=self.primary_initial_state.getMass())
         return np.array([satellite_mass_norm])
-
 
     @property
     def satellite(self):
