@@ -29,7 +29,7 @@ from gym_satellite_ca.envs import sat_data_class
 
 class PropagationUtilities:
 
-    def __init__(self, satellite: satDataClass.SatelliteData, ref_time: AbsoluteDate, ref_frame: Frame):
+    def __init__(self, satellite: sat_data_class.SatelliteData, ref_time: AbsoluteDate, ref_frame: Frame):
         self._satellite = satellite
         self._ref_time = ref_time
         self._ref_frame = ref_frame
