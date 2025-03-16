@@ -1,5 +1,13 @@
 # SatColAvoidEnv
 
+This repo implements a gymnasium environment which describes a collision event between a manoeuverable satellite and a 
+piece of debris.  
+For a more thorough description, check our research paper, which you can find below.
+
+[Collision Avoidance and Return Manoeuvre Optimisation for
+Low-Thrust Satellites Using Reinforcement Learning](https://www.scitepress.org/Papers/2025/132490/132490.pdf) 
+
+
 Installation
 ------------------
 You can follow the directions in the .travis.yml file, which describes the necessary steps to install this package and all its dependencies in a clean Anaconda environment.
